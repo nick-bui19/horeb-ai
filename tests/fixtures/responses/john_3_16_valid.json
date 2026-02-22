@@ -1,0 +1,50 @@
+{
+  "summary": [
+    "God's love for the world is expressed through the gift of his only Son, so that belief in him leads to eternal life rather than perishing.",
+    "The Son was sent not to condemn the world but to save it, and belief or unbelief in him determines a person's standing before God.",
+    "The passage uses light and darkness as metaphors: those who do evil avoid the light, while those who live by truth come to the light willingly."
+  ],
+  "key_themes": ["God's love", "salvation through belief", "eternal life", "judgment", "light and darkness"],
+  "named_entities": [
+    {
+      "name": "God",
+      "type": "person",
+      "verse_reference": "3:16",
+      "description": "The one who loved the world and gave his only begotten Son"
+    },
+    {
+      "name": "the Son",
+      "type": "person",
+      "verse_reference": "3:17",
+      "description": "Sent into the world not to judge but to save"
+    }
+  ],
+  "questions": [
+    {
+      "type": "comprehension",
+      "text": "According to verse 16, what is God's stated motivation for giving his only begotten Son?",
+      "verse_reference": "3:16"
+    },
+    {
+      "type": "comprehension",
+      "text": "What does verse 18 say determines whether a person is judged or not?",
+      "verse_reference": "3:18"
+    },
+    {
+      "type": "reflection",
+      "text": "How does the contrast between light and darkness in verses 19-21 describe the human condition as the passage presents it?",
+      "verse_reference": "3:19"
+    },
+    {
+      "type": "reflection",
+      "text": "What does it mean, in terms of the passage's own language, to 'come to the light'?",
+      "verse_reference": "3:21"
+    },
+    {
+      "type": "application",
+      "text": "Based on verse 17's statement that the Son was sent to save rather than condemn, how might this shape the way you speak about faith with others?",
+      "verse_reference": "3:17"
+    }
+  ],
+  "low_confidence_fields": []
+}

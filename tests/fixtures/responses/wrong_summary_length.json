@@ -1,0 +1,16 @@
+{
+  "summary": [
+    "God's love for the world is expressed through the gift of his only Son.",
+    "Belief leads to eternal life; unbelief leads to condemnation."
+  ],
+  "key_themes": ["salvation", "eternal life"],
+  "named_entities": null,
+  "questions": [
+    {"type": "comprehension", "text": "What motivates God in verse 16?", "verse_reference": "3:16"},
+    {"type": "comprehension", "text": "What determines condemnation in verse 18?", "verse_reference": "3:18"},
+    {"type": "reflection", "text": "How does the light/darkness contrast speak to you?", "verse_reference": "3:19"},
+    {"type": "reflection", "text": "What does it mean to come to the light?", "verse_reference": "3:21"},
+    {"type": "application", "text": "How does verse 17 shape how you talk about faith?", "verse_reference": "3:17"}
+  ],
+  "low_confidence_fields": []
+}
