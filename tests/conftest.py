@@ -1,13 +1,18 @@
 """
 Shared test infrastructure.
 
-FixtureLLMProvider — implements LLMProvider Protocol, returns a fixed string.
-load_fixture()      — reads a file from tests/fixtures/responses/.
-Pytest fixtures     — pre-built FixtureLLMProvider instances for common scenarios.
+FixtureLLMProvider         — implements LLMProvider Protocol, returns a fixed string.
+SequentialFixtureLLMProvider — returns responses in sequence (for retry path tests).
+load_fixture()             — reads a file from tests/fixtures/responses/<subdir>/.
+Pytest fixtures            — pre-built FixtureLLMProvider instances for common scenarios.
 """
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import pytest
+
+if TYPE_CHECKING:
+    from pydantic import BaseModel
 
 FIXTURES_DIR = Path(__file__).parent / "fixtures"
 RESPONSES_DIR = FIXTURES_DIR / "responses"
@@ -18,7 +23,8 @@ class FixtureLLMProvider:
     Test double for LLMProvider.
 
     Returns a fixed response string from complete(), allowing full pipeline
-    tests without live API calls.
+    tests without live API calls. The schema and max_tokens parameters are
+    accepted to satisfy the LLMProvider Protocol but are not used.
     """
 
     def __init__(self, response: str) -> None:
@@ -26,11 +32,19 @@ class FixtureLLMProvider:
         self.call_count = 0
         self.last_system: str | None = None
         self.last_prompt: str | None = None
+        self.last_schema: type | None = None
 
-    def complete(self, system: str, prompt: str) -> str:
+    def complete(
+        self,
+        system: str,
+        prompt: str,
+        schema: "type[BaseModel] | None" = None,
+        max_tokens: int | None = None,
+    ) -> str:
         self.call_count += 1
         self.last_system = system
         self.last_prompt = prompt
+        self.last_schema = schema
         return self._response
 
 
@@ -48,7 +62,13 @@ class SequentialFixtureLLMProvider:
         self.call_count = 0
         self.last_prompt: str | None = None
 
-    def complete(self, system: str, prompt: str) -> str:
+    def complete(
+        self,
+        system: str,
+        prompt: str,
+        schema: "type[BaseModel] | None" = None,
+        max_tokens: int | None = None,
+    ) -> str:
         self.call_count += 1
         self.last_prompt = prompt
         if self._index >= len(self._responses):
@@ -61,9 +81,20 @@ class SequentialFixtureLLMProvider:
         return response
 
 
-def load_fixture(filename: str) -> str:
-    """Load the content of a fixture file from tests/fixtures/responses/."""
-    path = RESPONSES_DIR / filename
+def load_fixture(filename: str, subdir: str = "") -> str:
+    """
+    Load the content of a fixture file from tests/fixtures/responses/<subdir>/.
+
+    Args:
+        filename: The fixture filename (e.g. "john_3_16_valid.json").
+        subdir:   Optional subdirectory under responses/ (e.g. "study_guide",
+                  "passage", "segment", "book", "similarity").
+                  Defaults to the root responses/ directory for Phase 1 compat.
+    """
+    if subdir:
+        path = RESPONSES_DIR / subdir / filename
+    else:
+        path = RESPONSES_DIR / filename
     return path.read_text(encoding="utf-8")
 
 
@@ -71,9 +102,14 @@ def load_fixture(filename: str) -> str:
 # Pytest fixtures
 # ---------------------------------------------------------------------------
 
+# ---------------------------------------------------------------------------
+# Phase 1 / study guide fixtures (responses/study_guide/ after Task 12 migration;
+# still at root until fixture reorganization task runs)
+# ---------------------------------------------------------------------------
+
 @pytest.fixture
 def valid_john_llm() -> FixtureLLMProvider:
-    """LLMProvider that returns a valid John 3:16-21 analysis."""
+    """LLMProvider that returns a valid John 3:16-21 study guide analysis."""
     return FixtureLLMProvider(load_fixture("john_3_16_valid.json"))
 
 

@@ -11,7 +11,7 @@ from horeb.errors import (
 )
 from horeb.prompts import SYSTEM_PROMPT, build_user_prompt
 from horeb.repair import repair_and_validate
-from horeb.schemas import AnalysisResult, PassageData
+from horeb.schemas import AnalysisResult, PassageData, StudyGuideResult
 
 if TYPE_CHECKING:
     from horeb.llm import LLMProvider
@@ -52,9 +52,15 @@ def analyze(reference: str, llm: "LLMProvider | None" = None) -> AnalysisResult:
         )
 
     user_prompt = build_user_prompt(passage)
-    raw_response = llm.complete(system=SYSTEM_PROMPT, prompt=user_prompt)
+    raw_response = llm.complete(system=SYSTEM_PROMPT, prompt=user_prompt, schema=StudyGuideResult)
 
-    result = repair_and_validate(raw=raw_response, llm=llm, prompt=user_prompt)
+    result = repair_and_validate(
+        raw=raw_response,
+        schema=StudyGuideResult,
+        llm=llm,
+        system_prompt=SYSTEM_PROMPT,
+        user_prompt=user_prompt,
+    )
 
     verify_citations(result, passage)
 

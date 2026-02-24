@@ -58,7 +58,7 @@ def main(
 
 
 def _print_result(result: AnalysisResult) -> None:
-    """Format and print an AnalysisResult to stdout."""
+    """Format and print a StudyGuideResult to stdout."""
     print("=== SUMMARY ===")
     for sentence in result.summary:
         print(f"  - {sentence}")
@@ -69,6 +69,13 @@ def _print_result(result: AnalysisResult) -> None:
             print(f"  - {theme}")
     else:
         print("  (not determined from passage text)")
+
+    if result.questions:
+        print("\n=== STUDY QUESTIONS ===")
+        for i, q in enumerate(result.questions, 1):
+            print(f"  {i}. [{q.type.value}] {q.text}")
+            if q.verse_reference:
+                print(f"     (cf. {q.verse_reference})")
 
     if result.low_confidence_fields:
         fields = ", ".join(result.low_confidence_fields)
