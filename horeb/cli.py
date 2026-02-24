@@ -5,7 +5,7 @@ from dotenv import load_dotenv
 
 load_dotenv()  # loads .env from the current working directory if present
 
-from horeb.engine import analyze
+from horeb.engine import analyze_study_guide as analyze
 from horeb.errors import (
     AnalysisFailedError,
     CitationOutOfRangeError,

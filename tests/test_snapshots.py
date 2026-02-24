@@ -11,7 +11,7 @@ import json
 
 import pytest
 
-from horeb.engine import analyze
+from horeb.engine import analyze_study_guide as analyze
 from horeb.repair import repair_and_validate
 from horeb.schemas import AnalysisResult, QuestionType
 from tests.conftest import FixtureLLMProvider, load_fixture

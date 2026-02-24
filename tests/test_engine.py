@@ -11,7 +11,13 @@ from unittest.mock import patch
 
 import pytest
 
-from horeb.engine import analyze, extract_verse_refs, verify_citations
+from horeb.engine import (
+    analyze,
+    analyze_study_guide,
+    extract_verse_refs,
+    verify_citations,
+    verify_synthesis_grounding,
+)
 from horeb.errors import (
     AnalysisFailedError,
     CitationOutOfRangeError,
@@ -19,7 +25,7 @@ from horeb.errors import (
     InvalidReferenceError,
 )
 from horeb.bible_text import retrieve_passage
-from horeb.schemas import AnalysisResult
+from horeb.schemas import AnalysisResult, StudyGuideResult
 from tests.conftest import (
     FixtureLLMProvider,
     SequentialFixtureLLMProvider,
@@ -28,26 +34,26 @@ from tests.conftest import (
 
 
 # ---------------------------------------------------------------------------
-# Happy path
+# Study guide happy path (Phase 1 — uses analyze_study_guide)
 # ---------------------------------------------------------------------------
 
-class TestAnalyzeHappyPath:
-    def test_valid_fixture_returns_analysis_result(self, valid_john_llm):
-        result = analyze("John 3:16-21", llm=valid_john_llm)
-        assert isinstance(result, AnalysisResult)
+class TestStudyGuideHappyPath:
+    def test_valid_fixture_returns_study_guide_result(self, valid_john_llm):
+        result = analyze_study_guide("John 3:16-21", llm=valid_john_llm)
+        assert isinstance(result, StudyGuideResult)
 
     def test_result_has_3_summary_items(self, valid_john_llm):
-        result = analyze("John 3:16-21", llm=valid_john_llm)
+        result = analyze_study_guide("John 3:16-21", llm=valid_john_llm)
         assert len(result.summary) == 3
 
     def test_result_has_5_questions(self, valid_john_llm):
-        result = analyze("John 3:16-21", llm=valid_john_llm)
+        result = analyze_study_guide("John 3:16-21", llm=valid_john_llm)
         assert len(result.questions) == 5
 
     def test_result_question_distribution_is_2_2_1(self, valid_john_llm):
         from collections import Counter
         from horeb.schemas import QuestionType
-        result = analyze("John 3:16-21", llm=valid_john_llm)
+        result = analyze_study_guide("John 3:16-21", llm=valid_john_llm)
         counts = Counter(q.type for q in result.questions)
         assert counts[QuestionType.COMPREHENSION] == 2
         assert counts[QuestionType.REFLECTION] == 2
@@ -62,13 +68,15 @@ class TestInvalidReferencePropagation:
     def test_invalid_reference_raises_before_llm_call(self):
         llm = FixtureLLMProvider("should not be called")
         with pytest.raises(InvalidReferenceError):
-            analyze("NotARealBook 1:1", llm=llm)
+            analyze_study_guide("NotARealBook 1:1", llm=llm)
         assert llm.call_count == 0
 
-    def test_chapter_without_verses_raises_invalid_reference(self):
+    def test_chapter_ref_raises_in_study_guide_pipeline(self):
+        # analyze_study_guide() calls retrieve_passage() which requires a verse range.
+        # Chapter-only refs are accepted by the routed analyze() (Phase 2) but not here.
         llm = FixtureLLMProvider("")
         with pytest.raises(InvalidReferenceError):
-            analyze("John 3", llm=llm)
+            analyze_study_guide("John 3", llm=llm)
 
 
 # ---------------------------------------------------------------------------
@@ -80,7 +88,6 @@ class TestEmptyPassageGuard:
         from horeb.schemas import PassageData
         llm = FixtureLLMProvider("should not be called")
 
-        # Patch retrieve_passage to return a passage with very short text
         short_passage = PassageData(
             reference="John 3:16",
             book=43,
@@ -94,7 +101,7 @@ class TestEmptyPassageGuard:
         )
         with patch("horeb.engine.retrieve_passage", return_value=short_passage):
             with pytest.raises(EmptyPassageError):
-                analyze("John 3:16", llm=llm)
+                analyze_study_guide("John 3:16", llm=llm)
 
         assert llm.call_count == 0
 
@@ -105,20 +112,18 @@ class TestEmptyPassageGuard:
 
 class TestCitationVerification:
     def test_in_range_citation_passes(self, valid_john_llm):
-        # john_3_16_valid.json cites verses within 3:16-3:21 — should pass
-        result = analyze("John 3:16-21", llm=valid_john_llm)
-        assert isinstance(result, AnalysisResult)
+        result = analyze_study_guide("John 3:16-21", llm=valid_john_llm)
+        assert isinstance(result, StudyGuideResult)
 
     def test_out_of_range_citation_raises(self, out_of_range_citation_llm):
         # out_of_range_citation.json cites John 3:22 which is outside 3:16-21
         with pytest.raises(CitationOutOfRangeError):
-            analyze("John 3:16-21", llm=out_of_range_citation_llm)
+            analyze_study_guide("John 3:16-21", llm=out_of_range_citation_llm)
 
     def test_extract_verse_refs_from_questions(self, valid_john_llm):
-        result = analyze("John 3:16-21", llm=valid_john_llm)
+        result = analyze_study_guide("John 3:16-21", llm=valid_john_llm)
         refs = extract_verse_refs(result)
         assert len(refs) > 0
-        # All question refs should be "chapter:verse" format
         for ref in refs:
             assert ":" in ref
 
@@ -145,8 +150,8 @@ class TestCitationVerification:
 class TestAnalysisFailedPropagation:
     def test_analysis_failed_raises_with_wrong_distribution_and_bad_retry(self):
         wrong = load_fixture("wrong_question_distribution.json")
-        # analyze() calls llm.complete() once (initial), then repair_and_validate
-        # calls it once more (retry) → 2 total calls, both return wrong distribution
+        # analyze_study_guide() calls llm.complete() once, then repair_and_validate
+        # retries once → 2 total LLM calls, both return wrong distribution
         llm = SequentialFixtureLLMProvider([wrong, wrong])
         with pytest.raises(AnalysisFailedError):
-            analyze("John 3:16-21", llm=llm)
+            analyze_study_guide("John 3:16-21", llm=llm)
