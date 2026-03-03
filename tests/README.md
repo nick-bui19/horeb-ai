@@ -42,6 +42,35 @@ No failure path ships without coverage.
 | 20 | CLI exit code 5 | AnalysisFailedError | test_cli.py | TestExitCodes::test_analysis_failed_exit_code_5 |
 | 20 | [WARN] logged on retry | stderr output | test_repair.py | TestStage3LLMRetry::test_warn_logged_to_stderr_on_retry |
 | 21 | Snapshot: John 3:16-21 result structure | Full AnalysisResult shape | test_snapshots.py | TestJohnSnapshot::* |
+| 22 | Granularity detection → PASSAGE | Verse range / single verse | test_bible_text.py | TestGranularityDetection::test_verse_range_is_passage |
+| 22 | Granularity detection → CHAPTER | Chapter-only ref | test_bible_text.py | TestGranularityDetection::test_chapter_is_chapter |
+| 22 | Granularity detection → BOOK | Book name only | test_bible_text.py | TestGranularityDetection::test_book_only_is_book |
+| 22 | Granularity detection → BOOK | Numbered book (1 Corinthians) | test_bible_text.py | TestGranularityDetection::test_numbered_book_is_book |
+| 22 | Granularity detection → InvalidReferenceError | Empty / nonsense | test_bible_text.py | TestGranularityDetection::test_empty_raises_invalid_reference |
+| 23 | analyze() PASSAGE dispatch | Routes to analyze_passage | test_engine.py | TestAnalyzeRouting::test_passage_ref_routes_to_analyze_passage |
+| 23 | analyze() CHAPTER dispatch | Routes to analyze_passage via retrieve_chapter | test_engine.py | TestAnalyzeRouting::test_chapter_ref_routes_to_analyze_passage |
+| 23 | analyze() BOOK dispatch | Routes to analyze_book | test_engine.py | TestAnalyzeRouting::test_book_ref_routes_to_analyze_book |
+| 24 | analyze_passage() happy path | PassageAnalysisResult returned | test_engine.py | TestAnalyzePassage::test_valid_fixture_returns_passage_result |
+| 24 | analyze_passage() EmptyPassageError | Short text raises before LLM call | test_engine.py | TestAnalyzePassage::test_empty_passage_raises_before_llm_call |
+| 24 | analyze_passage() citation out of range | John 3:22 outside 3:16-21 | test_engine.py | TestAnalyzePassage::test_out_of_range_citation_raises |
+| 25 | verify_synthesis_grounding() happy path | Valid outline passes | test_engine.py | TestVerifySynthesisGrounding::test_valid_result_passes |
+| 25 | verify_synthesis_grounding() empty source_segments | CitationOutOfRangeError | test_engine.py | TestVerifySynthesisGrounding::test_empty_source_segments_raises |
+| 25 | verify_synthesis_grounding() nonexistent segment | CitationOutOfRangeError | test_engine.py | TestVerifySynthesisGrounding::test_nonexistent_segment_index_raises |
+| 25 | verify_synthesis_grounding() malformed anchor | CitationOutOfRangeError | test_engine.py | TestVerifySynthesisGrounding::test_malformed_anchor_raises |
+| 25 | verify_synthesis_grounding() anchor chapter out of range | CitationOutOfRangeError | test_engine.py | TestVerifySynthesisGrounding::test_anchor_chapter_outside_segment_range_raises |
+| 26 | find_similar() scorer data stamped | LLM fields overwritten by scorer | test_engine.py | TestFindSimilar::test_scorer_data_stamped_over_llm_fields |
+| 26 | find_similar() invented reference | CitationOutOfRangeError | test_engine.py | TestFindSimilar::test_invented_reference_raises |
+| 26 | find_similar() bad seed quote | CitationOutOfRangeError | test_engine.py | TestFindSimilar::test_bad_seed_quote_raises |
+| 26 | find_similar() bad candidate quote | CitationOutOfRangeError | test_engine.py | TestFindSimilar::test_bad_candidate_quote_raises |
+| 26 | find_similar() empty candidates | Returns empty result without LLM | test_engine.py | TestFindSimilar::test_empty_candidates_returns_empty_result_without_llm_call |
+| 27 | SegmentResult outline_label > 8 words | ValidationError | test_schemas.py | TestSegmentResultValidators::test_outline_label_9_words_rejected |
+| 27 | SegmentResult key_themes > 3 items | ValidationError | test_schemas.py | TestSegmentResultValidators::test_key_themes_4_items_rejected |
+| 27 | SegmentResult citations > 5 items | ValidationError | test_schemas.py | TestSegmentResultValidators::test_citations_6_items_rejected |
+| 28 | SimilarOverlap score < 0.0 | ValidationError | test_schemas.py | TestSimilarOverlapValidator::test_score_below_zero_rejected |
+| 28 | SimilarOverlap score > 1.0 | ValidationError | test_schemas.py | TestSimilarOverlapValidator::test_score_above_one_rejected |
+| 29 | CLI _print_result PassageAnalysisResult | Citations section printed | test_cli.py | TestPrintResultPassage::* |
+| 29 | CLI _print_result BookAnalysisResult | Outline section printed | test_cli.py | TestPrintResultBook::* |
+| 29 | CLI _print_similar_result | Candidates and scores printed | test_cli.py | TestPrintSimilarResult::* |
 
 ## Running tests
 

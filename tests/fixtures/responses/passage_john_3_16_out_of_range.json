@@ -1,0 +1,12 @@
+{
+  "summary": [
+    "First summary point about the passage text.",
+    "Second summary point drawing from the verses.",
+    "Third summary point concluding the analysis."
+  ],
+  "key_themes": ["love"],
+  "citations": [
+    {"verse_reference": "3:22", "quoted_text": "After these things came Jesus"}
+  ],
+  "low_confidence_fields": []
+}

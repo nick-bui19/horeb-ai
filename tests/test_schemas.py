@@ -9,7 +9,7 @@ Covers test matrix items:
 import pytest
 from pydantic import ValidationError
 
-from horeb.schemas import AnalysisResult, QuestionType
+from horeb.schemas import AnalysisResult, QuestionType, SegmentResult, SimilarOverlap, VerseCitation
 
 
 # ---------------------------------------------------------------------------
@@ -132,3 +132,80 @@ class TestNullableFields:
         questions[4]["verse_reference"] = None
         result = AnalysisResult.model_validate(_valid_payload(questions=questions))
         assert result.questions[4].verse_reference is None
+
+
+# ---------------------------------------------------------------------------
+# SegmentResult validators
+# ---------------------------------------------------------------------------
+
+def _valid_seg_payload(**overrides) -> dict:
+    base = {
+        "segment_index": 0,
+        "outline_label": "Opening section of book",
+        "summary": ["A.", "B.", "C."],
+    }
+    base.update(overrides)
+    return base
+
+
+class TestSegmentResultValidators:
+    def test_valid_segment_result_accepted(self):
+        result = SegmentResult.model_validate(_valid_seg_payload())
+        assert result.segment_index == 0
+
+    def test_outline_label_9_words_rejected(self):
+        label = "This outline label has exactly nine words total here"
+        with pytest.raises(ValidationError, match="outline_label"):
+            SegmentResult.model_validate(_valid_seg_payload(outline_label=label))
+
+    def test_outline_label_exactly_8_words_accepted(self):
+        label = "Opening narrative of Ruth in Judean land"  # 8 words
+        result = SegmentResult.model_validate(_valid_seg_payload(outline_label=label))
+        assert result.outline_label == label
+
+    def test_key_themes_4_items_rejected(self):
+        with pytest.raises(ValidationError, match="key_themes"):
+            SegmentResult.model_validate(
+                _valid_seg_payload(key_themes=["a", "b", "c", "d"])
+            )
+
+    def test_key_themes_exactly_3_items_accepted(self):
+        result = SegmentResult.model_validate(
+            _valid_seg_payload(key_themes=["faith", "love", "hope"])
+        )
+        assert len(result.key_themes) == 3
+
+    def test_citations_6_items_rejected(self):
+        citations = [
+            {"verse_reference": f"1:{i}", "quoted_text": None} for i in range(1, 7)
+        ]
+        with pytest.raises(ValidationError, match="citations"):
+            SegmentResult.model_validate(_valid_seg_payload(citations=citations))
+
+
+# ---------------------------------------------------------------------------
+# SimilarOverlap.similarity_score range validator
+# ---------------------------------------------------------------------------
+
+class TestSimilarOverlapValidator:
+    def _valid_overlap(self, **overrides) -> dict:
+        base = {
+            "candidate_ref": "John 1:12",
+            "verbatim_seed_quote": "God so loved",
+            "verbatim_candidate_quote": "believed on his name",
+            "similarity_score": 0.5,
+        }
+        base.update(overrides)
+        return base
+
+    def test_score_in_range_accepted(self):
+        result = SimilarOverlap.model_validate(self._valid_overlap(similarity_score=0.75))
+        assert result.similarity_score == 0.75
+
+    def test_score_below_zero_rejected(self):
+        with pytest.raises(ValidationError, match="0.0"):
+            SimilarOverlap.model_validate(self._valid_overlap(similarity_score=-0.1))
+
+    def test_score_above_one_rejected(self):
+        with pytest.raises(ValidationError, match="1.0"):
+            SimilarOverlap.model_validate(self._valid_overlap(similarity_score=1.01))
