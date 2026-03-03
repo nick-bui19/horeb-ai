@@ -154,14 +154,27 @@ class BookAnalysisResult(GroundedBase):
 class SimilarOverlap(BaseModel):
     """
     One candidate similar passage.
-    verbatim quotes are post-validated against locally retrieved text —
-    the model cannot invent a parallel without the check catching it.
+
+    verbatim_seed_quote and verbatim_candidate_quote are post-validated in
+    engine.find_similar() against locally retrieved text — the model cannot
+    invent a parallel without the check catching it.
+
+    overlap_terms and similarity_score are stamped from the deterministic
+    TF-IDF scorer after LLM validation; the LLM-produced values are discarded.
+    They default to empty/zero so the LLM can omit them without failing validation.
     """
     candidate_ref: str
-    verbatim_seed_quote: str        # must appear verbatim in seed passage text
-    verbatim_candidate_quote: str   # must appear verbatim in candidate passage text
-    overlap_terms: list[str]        # matched tokens/phrases from TF-IDF scorer
-    similarity_score: float         # from deterministic scorer, not LLM
+    verbatim_seed_quote: str            # must appear verbatim in seed passage text
+    verbatim_candidate_quote: str       # must appear verbatim in candidate passage text
+    overlap_terms: list[str] = []       # stamped from TF-IDF scorer post-LLM
+    similarity_score: float = 0.0       # stamped from TF-IDF scorer post-LLM; 0.0–1.0
+
+    @field_validator("similarity_score")
+    @classmethod
+    def validate_score_range(cls, v: float) -> float:
+        if not (0.0 <= v <= 1.0):
+            raise ValueError(f"similarity_score must be between 0.0 and 1.0, got {v}")
+        return v
 
 
 class SimilarityResult(BaseModel):

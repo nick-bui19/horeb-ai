@@ -14,6 +14,8 @@ import pytest
 
 from horeb.bible_text import (
     MAX_PASSAGE_VERSES,
+    Granularity,
+    detect_granularity,
     retrieve_passage,
 )
 from horeb.errors import InvalidReferenceError
@@ -148,6 +150,65 @@ class TestInvalidReferences:
     def test_not_a_bible_reference(self):
         with pytest.raises(InvalidReferenceError):
             retrieve_passage("Hello world")
+
+
+# ---------------------------------------------------------------------------
+# Granularity detection
+# ---------------------------------------------------------------------------
+
+class TestGranularityDetection:
+    def test_verse_range_is_passage(self):
+        _, g = detect_granularity("John 3:16-21")
+        assert g == Granularity.PASSAGE
+
+    def test_single_verse_is_passage(self):
+        _, g = detect_granularity("John 3:16")
+        assert g == Granularity.PASSAGE
+
+    def test_chapter_is_chapter(self):
+        _, g = detect_granularity("John 3")
+        assert g == Granularity.CHAPTER
+
+    def test_book_only_is_book(self):
+        _, g = detect_granularity("Ruth")
+        assert g == Granularity.BOOK
+
+    def test_numbered_book_is_book(self):
+        _, g = detect_granularity("1 Corinthians")
+        assert g == Granularity.BOOK
+
+    def test_second_book_is_book(self):
+        _, g = detect_granularity("2 Timothy")
+        assert g == Granularity.BOOK
+
+    def test_matthew_chapter_is_chapter(self):
+        _, g = detect_granularity("Matthew 5")
+        assert g == Granularity.CHAPTER
+
+    def test_genesis_chapter_verse_is_passage(self):
+        _, g = detect_granularity("Genesis 1:1-3")
+        assert g == Granularity.PASSAGE
+
+    def test_empty_raises_invalid_reference(self):
+        with pytest.raises(InvalidReferenceError):
+            detect_granularity("")
+
+    def test_nonsense_raises_invalid_reference(self):
+        with pytest.raises(InvalidReferenceError):
+            detect_granularity("hello world")
+
+    def test_ref_object_has_correct_book_for_passage(self):
+        import pythonbible as pb
+        ref, _ = detect_granularity("John 3:16-21")
+        assert ref.book == pb.Book.JOHN
+        assert ref.start_chapter == 3
+        assert ref.start_verse == 16
+
+    def test_ref_object_has_correct_book_for_chapter(self):
+        import pythonbible as pb
+        ref, _ = detect_granularity("Romans 8")
+        assert ref.book == pb.Book.ROMANS
+        assert ref.start_chapter == 8
 
 
 # ---------------------------------------------------------------------------

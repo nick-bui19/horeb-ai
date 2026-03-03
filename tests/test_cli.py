@@ -19,6 +19,7 @@ from horeb.cli import (
     EXIT_INVALID_REFERENCE,
     app,
     _print_result,
+    _print_similar_result,
 )
 from horeb.errors import (
     AnalysisFailedError,
@@ -26,7 +27,17 @@ from horeb.errors import (
     EmptyPassageError,
     InvalidReferenceError,
 )
-from horeb.schemas import AnalysisResult, Question, QuestionType
+from horeb.schemas import (
+    AnalysisResult,
+    BookAnalysisResult,
+    OutlineSection,
+    PassageAnalysisResult,
+    Question,
+    QuestionType,
+    SimilarityResult,
+    SimilarOverlap,
+    VerseCitation,
+)
 
 runner = CliRunner()
 
@@ -143,3 +154,199 @@ class TestPrintResult:
         captured = capsys.readouterr()
         assert len(captured.out) > 0
         assert captured.err == ""
+
+
+# ---------------------------------------------------------------------------
+# _print_result — PassageAnalysisResult branch
+# ---------------------------------------------------------------------------
+
+class TestPrintResultPassage:
+    def _passage_result(self) -> PassageAnalysisResult:
+        return PassageAnalysisResult(
+            summary=["First point.", "Second point.", "Third point."],
+            key_themes=["grace", "faith", "love", "hope", "peace"],
+            citations=[
+                VerseCitation(verse_reference="3:16", quoted_text="For God so loved"),
+                VerseCitation(verse_reference="3:17", quoted_text=None),
+            ],
+        )
+
+    def test_summary_section_present(self, capsys):
+        _print_result(self._passage_result())
+        out = capsys.readouterr().out
+        assert "SUMMARY" in out
+        assert "First point." in out
+
+    def test_citations_section_present(self, capsys):
+        _print_result(self._passage_result())
+        out = capsys.readouterr().out
+        assert "CITATIONS" in out
+        assert "3:16" in out
+
+    def test_citation_with_quoted_text_prints_snippet(self, capsys):
+        _print_result(self._passage_result())
+        out = capsys.readouterr().out
+        assert "For God so loved" in out
+
+    def test_citation_without_quoted_text_prints_reference_only(self, capsys):
+        _print_result(self._passage_result())
+        out = capsys.readouterr().out
+        assert "3:17" in out
+
+    def test_key_themes_capped_at_5(self, capsys):
+        result = self._passage_result()
+        result.key_themes = ["a", "b", "c", "d", "e", "f", "g"]
+        _print_result(result)
+        out = capsys.readouterr().out
+        assert "a" in out
+        assert "e" in out
+        assert "f" not in out  # 6th theme should be truncated
+
+    def test_no_citations_section_when_empty(self, capsys):
+        result = PassageAnalysisResult(
+            summary=["A.", "B.", "C."],
+            citations=[],
+        )
+        _print_result(result)
+        out = capsys.readouterr().out
+        assert "CITATIONS" not in out
+
+    def test_no_study_questions_section(self, capsys):
+        _print_result(self._passage_result())
+        out = capsys.readouterr().out
+        assert "STUDY QUESTIONS" not in out
+
+
+# ---------------------------------------------------------------------------
+# _print_result — BookAnalysisResult branch
+# ---------------------------------------------------------------------------
+
+class TestPrintResultBook:
+    def _book_result(self) -> BookAnalysisResult:
+        return BookAnalysisResult(
+            summary=["Book point one.", "Book point two.", "Book point three."],
+            key_themes=["redemption"],
+            outline=[
+                OutlineSection(
+                    title="Opening narrative",
+                    start_verse="1:1",
+                    end_verse="1:22",
+                    source_segments=[0],
+                    summary="Ruth follows Naomi to Bethlehem.",
+                ),
+                OutlineSection(
+                    title="Harvest and provision",
+                    start_verse="2:1",
+                    end_verse="2:23",
+                    source_segments=[1],
+                    summary=None,
+                ),
+            ],
+            failed_segments=[],
+        )
+
+    def test_summary_section_present(self, capsys):
+        _print_result(self._book_result())
+        out = capsys.readouterr().out
+        assert "SUMMARY" in out
+        assert "Book point one." in out
+
+    def test_outline_section_present(self, capsys):
+        _print_result(self._book_result())
+        out = capsys.readouterr().out
+        assert "OUTLINE" in out
+        assert "Opening narrative" in out
+        assert "1:1" in out
+        assert "1:22" in out
+
+    def test_outline_section_summary_printed_when_present(self, capsys):
+        _print_result(self._book_result())
+        out = capsys.readouterr().out
+        assert "Ruth follows Naomi" in out
+
+    def test_no_failed_segments_note_when_empty(self, capsys):
+        _print_result(self._book_result())
+        out = capsys.readouterr().out
+        assert "could not be analyzed" not in out
+
+    def test_failed_segments_note_when_present(self, capsys):
+        result = self._book_result()
+        result.failed_segments = [2, 3]
+        _print_result(result)
+        out = capsys.readouterr().out
+        assert "2 segment(s) could not be analyzed" in out
+
+    def test_no_study_questions_or_citations_section(self, capsys):
+        _print_result(self._book_result())
+        out = capsys.readouterr().out
+        assert "STUDY QUESTIONS" not in out
+        assert "CITATIONS" not in out
+
+
+# ---------------------------------------------------------------------------
+# _print_similar_result
+# ---------------------------------------------------------------------------
+
+class TestPrintSimilarResult:
+    def _similar_result(self) -> SimilarityResult:
+        return SimilarityResult(
+            seed_ref="John 3:16",
+            candidates=[
+                SimilarOverlap(
+                    candidate_ref="John 1:12",
+                    verbatim_seed_quote="believed on his name",
+                    verbatim_candidate_quote="believed on his name",
+                    overlap_terms=["believed", "name"],
+                    similarity_score=0.75,
+                ),
+                SimilarOverlap(
+                    candidate_ref="Romans 8:1",
+                    verbatim_seed_quote="no condemnation",
+                    verbatim_candidate_quote="no condemnation",
+                    overlap_terms=["condemnation"],
+                    similarity_score=0.42,
+                ),
+            ],
+        )
+
+    def test_header_contains_seed_ref(self, capsys):
+        _print_similar_result(self._similar_result())
+        out = capsys.readouterr().out
+        assert "SIMILAR PASSAGES" in out
+        assert "John 3:16" in out
+
+    def test_candidate_references_printed(self, capsys):
+        _print_similar_result(self._similar_result())
+        out = capsys.readouterr().out
+        assert "John 1:12" in out
+        assert "Romans 8:1" in out
+
+    def test_similarity_scores_printed(self, capsys):
+        _print_similar_result(self._similar_result())
+        out = capsys.readouterr().out
+        assert "0.7500" in out
+        assert "0.4200" in out
+
+    def test_overlap_terms_printed(self, capsys):
+        _print_similar_result(self._similar_result())
+        out = capsys.readouterr().out
+        assert "believed" in out
+        assert "condemnation" in out
+
+    def test_verbatim_quotes_printed(self, capsys):
+        _print_similar_result(self._similar_result())
+        out = capsys.readouterr().out
+        assert "believed on his name" in out
+        assert "no condemnation" in out
+
+    def test_empty_candidates_prints_no_results_message(self, capsys):
+        result = SimilarityResult(seed_ref="John 3:16", candidates=[])
+        _print_similar_result(result)
+        out = capsys.readouterr().out
+        assert "No similar passages found" in out
+
+    def test_empty_candidates_prints_nothing_else(self, capsys):
+        result = SimilarityResult(seed_ref="John 3:16", candidates=[])
+        _print_similar_result(result)
+        out = capsys.readouterr().out
+        assert "SIMILAR PASSAGES" not in out

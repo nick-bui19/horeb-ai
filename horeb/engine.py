@@ -332,14 +332,16 @@ def analyze_book(book_name: str, llm: "LLMProvider") -> BookAnalysisResult:
     total_llm_calls = 0
 
     # Stage 1: per-segment analysis
-    for seg in segments:
+    for list_pos, seg in enumerate(segments):
         if total_llm_calls >= MAX_BOOK_LLM_CALLS:
             print(
                 f"[WARN] Reached MAX_BOOK_LLM_CALLS={MAX_BOOK_LLM_CALLS}. "
                 f"Stopping segment processing.",
                 file=sys.stderr,
             )
-            for remaining in segments[seg.segment_index:]:
+            # Use list position, not segment_index: segment_index may not equal
+            # list position if earlier segments were skipped (MIN_PASSAGE_CHARS).
+            for remaining in segments[list_pos:]:
                 segment_failures.append(SegmentFailure(
                     segment_index=remaining.segment_index,
                     chapter_start=remaining.start_chapter,
