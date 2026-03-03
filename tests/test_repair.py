@@ -81,14 +81,15 @@ class TestStage1DirectParse:
     def test_valid_response_succeeds_without_repair(self):
         raw = load_fixture("john_3_16_valid.json")
         llm = FixtureLLMProvider("should not be called")
-        result = repair_and_validate(raw, schema=_SCHEMA, llm=llm, system_prompt=_SYSTEM, user_prompt="")
+        result, retry_calls = repair_and_validate(raw, schema=_SCHEMA, llm=llm, system_prompt=_SYSTEM, user_prompt="")
         assert isinstance(result, StudyGuideResult)
         assert llm.call_count == 0  # no LLM call needed
+        assert retry_calls == 0
 
     def test_result_has_correct_structure(self):
         raw = load_fixture("john_3_16_valid.json")
         llm = FixtureLLMProvider("")
-        result = repair_and_validate(raw, schema=_SCHEMA, llm=llm, system_prompt=_SYSTEM, user_prompt="")
+        result, _ = repair_and_validate(raw, schema=_SCHEMA, llm=llm, system_prompt=_SYSTEM, user_prompt="")
         assert len(result.summary) == 3
         assert len(result.questions) == 5
 
@@ -104,7 +105,7 @@ class TestStage2JsonRepair:
         llm = FixtureLLMProvider(valid_fallback)
         # If json_repair succeeds → result is returned, llm not called
         # If json_repair fails → llm is called once
-        result = repair_and_validate(raw, schema=_SCHEMA, llm=llm, system_prompt=_SYSTEM, user_prompt="")
+        result, _ = repair_and_validate(raw, schema=_SCHEMA, llm=llm, system_prompt=_SYSTEM, user_prompt="")
         assert isinstance(result, StudyGuideResult)
 
 
@@ -119,8 +120,9 @@ class TestStage3LLMRetry:
         valid = load_fixture("john_3_16_valid.json")
         llm = SequentialFixtureLLMProvider([valid])  # retry response
 
-        result = repair_and_validate(wrong, schema=_SCHEMA, llm=llm, system_prompt=_SYSTEM, user_prompt="test prompt")
+        result, retry_calls = repair_and_validate(wrong, schema=_SCHEMA, llm=llm, system_prompt=_SYSTEM, user_prompt="test prompt")
         assert isinstance(result, StudyGuideResult)
+        assert retry_calls == 1
 
     def test_retry_is_called_once_on_schema_failure(self):
         wrong = load_fixture("wrong_question_distribution.json")

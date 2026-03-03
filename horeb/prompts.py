@@ -173,12 +173,21 @@ def build_synthesis_system_prompt() -> str:
 def build_synthesis_user_prompt(
     segments: "list[SegmentResult]",
     failed_segments: "list[SegmentFailure]",
+    verse_texts: "dict[int, list[tuple[str, str]]] | None" = None,
 ) -> str:
     """
     Build synthesis input from validated segment outputs only.
 
     Failed segments are included as explicit gap markers so the synthesis
     model cannot infer or fill in their content.
+
+    Args:
+        segments:        Validated SegmentResult objects from stage 1.
+        failed_segments: SegmentFailure records for gap markers.
+        verse_texts:     Optional mapping of segment_index → list of (verse_ref, text)
+                         tuples. When provided, the verbatim text of each segment's cited
+                         verses is appended to its block, giving the synthesis model a
+                         direct text anchor rather than summaries alone.
     """
     # Build a lookup so we can interleave failures in index order
     failed_by_index: dict[int, "SegmentFailure"] = {f.segment_index: f for f in failed_segments}
@@ -204,12 +213,18 @@ def build_synthesis_user_prompt(
                 if seg.citations else "(none)"
             )
             summary_str = "\n  ".join(f"- {s}" for s in seg.summary)
-            parts.append(
+            seg_block = (
                 f"\n[Segment {idx}: {seg.outline_label}]\n"
                 f"Summary:\n  {summary_str}\n"
                 f"Themes: {themes_str}\n"
                 f"Citations: {citations_str}"
             )
+            if verse_texts and idx in verse_texts:
+                verse_lines = "\n  ".join(
+                    f"[{ref}] {text}" for ref, text in verse_texts[idx]
+                )
+                seg_block += f"\nCited verse texts:\n  {verse_lines}"
+            parts.append(seg_block)
 
     return "\n".join(parts)
 

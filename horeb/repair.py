@@ -35,7 +35,7 @@ def repair_and_validate(
     system_prompt: str,
     user_prompt: str,
     max_tokens: int | None = None,
-) -> T:
+) -> tuple[T, int]:
     """
     Attempt to parse and validate a raw LLM response string against schema T.
 
@@ -48,7 +48,7 @@ def repair_and_validate(
         max_tokens:    Optional token limit override forwarded to the retry call.
 
     Returns:
-        Validated instance of T.
+        Tuple of (validated instance of T, number of LLM retry calls made: 0 or 1).
 
     Raises:
         AnalysisFailedError: if all stages fail, with raw_response preserved.
@@ -56,14 +56,14 @@ def repair_and_validate(
     # Stage 1: direct parse + validate
     result = _try_parse(raw, schema)
     if result is not None:
-        return result
+        return result, 0
 
     # Stage 2: structural JSON repair + validate
     try:
         repaired = json_repair.repair(raw)
         result = _try_parse(repaired, schema)
         if result is not None:
-            return result
+            return result, 0
     except Exception:
         # json_repair can raise on extreme inputs — treat as repair failure
         pass
@@ -89,7 +89,7 @@ def repair_and_validate(
 
     result = _try_parse(retry_raw, schema)
     if result is not None:
-        return result
+        return result, 1
 
     raise AnalysisFailedError(
         f"Analysis failed after all repair attempts for {schema.__name__}",

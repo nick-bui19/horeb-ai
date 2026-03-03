@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 import sys
 from enum import Enum
 from typing import TYPE_CHECKING
@@ -9,6 +10,8 @@ import pythonbible as pb
 from horeb.bible_text import (
     Granularity,
     MAX_BOOK_LLM_CALLS,
+    Segment,
+    _get_verse_text,
     detect_granularity,
     retrieve_chapter,
     retrieve_passage,
@@ -20,12 +23,15 @@ from horeb.errors import (
     EmptyPassageError,
     InvalidReferenceError,
 )
+from horeb.parallels import score_similarity
 from horeb.prompts import (
     SYSTEM_PROMPT,
     build_passage_system_prompt,
     build_passage_user_prompt,
     build_segment_system_prompt,
     build_segment_user_prompt,
+    build_similarity_system_prompt,
+    build_similarity_user_prompt,
     build_synthesis_system_prompt,
     build_synthesis_user_prompt,
     build_user_prompt,
@@ -38,6 +44,8 @@ from horeb.schemas import (
     PassageData,
     SegmentFailure,
     SegmentResult,
+    SimilarityResult,
+    SimilarOverlap,
     StudyGuideResult,
 )
 
@@ -46,6 +54,18 @@ if TYPE_CHECKING:
 
 MIN_PASSAGE_CHARS: int = 20
 SEGMENT_FAILURE_THRESHOLD: float = 0.3   # abort book if >30% of segments fail
+
+
+# ---------------------------------------------------------------------------
+# Text normalisation for verbatim quote validation
+# ---------------------------------------------------------------------------
+
+def _normalize_quote(text: str) -> str:
+    """Lowercase, strip punctuation, collapse whitespace for substring comparison."""
+    text = text.lower()
+    text = re.sub(r"[^\w\s]", "", text)
+    text = re.sub(r"\s+", " ", text).strip()
+    return text
 
 
 # ---------------------------------------------------------------------------
@@ -189,16 +209,28 @@ def _check_single_verse_citation(
 def verify_synthesis_grounding(
     book_result: BookAnalysisResult,
     segment_results: list[SegmentResult],
+    segments: list[Segment] | None = None,
 ) -> None:
     """
     Verify that every outline section in the synthesis output is grounded in
     at least one validated segment result.
 
+    If segments is provided, also validates that each outline section's
+    start_verse and end_verse anchors are in valid "chapter:verse" format and
+    that their chapter falls within the chapter range of the cited source_segments.
+
     Raises:
         CitationOutOfRangeError: if any outline section has empty source_segments,
-            or references a segment index that does not exist.
+            references a non-existent segment index, has malformed verse anchors,
+            or has verse anchors outside the chapter range of cited source_segments.
     """
     valid_indices = {s.segment_index for s in segment_results}
+
+    # Build chapter range lookup if segments list is provided
+    seg_chapter_range: dict[int, tuple[int, int]] = {}
+    if segments:
+        for s in segments:
+            seg_chapter_range[s.segment_index] = (s.start_chapter, s.end_chapter)
 
     for i, section in enumerate(book_result.outline):
         if not section.source_segments:
@@ -214,6 +246,39 @@ def verify_synthesis_grounding(
                     f"Valid indices: {sorted(valid_indices)}"
                 )
 
+        # Validate verse anchor format and chapter range against source segments
+        if seg_chapter_range:
+            valid_chapters: set[int] = set()
+            for seg_idx in section.source_segments:
+                if seg_idx in seg_chapter_range:
+                    start_ch, end_ch = seg_chapter_range[seg_idx]
+                    valid_chapters.update(range(start_ch, end_ch + 1))
+
+            for anchor_field, anchor in [
+                ("start_verse", section.start_verse),
+                ("end_verse", section.end_verse),
+            ]:
+                if not anchor:
+                    continue
+                try:
+                    parts = anchor.split(":")
+                    if len(parts) != 2:
+                        raise ValueError
+                    chapter, verse = int(parts[0]), int(parts[1])
+                    if chapter < 1 or verse < 1:
+                        raise ValueError
+                except ValueError:
+                    raise CitationOutOfRangeError(
+                        f"Outline section {i} ({section.title!r}) {anchor_field} "
+                        f"{anchor!r} is not a valid chapter:verse coordinate."
+                    )
+                if valid_chapters and chapter not in valid_chapters:
+                    raise CitationOutOfRangeError(
+                        f"Outline section {i} ({section.title!r}) {anchor_field} "
+                        f"{anchor!r} has chapter {chapter} outside the chapter range "
+                        f"of its source segments (valid chapters: {sorted(valid_chapters)})."
+                    )
+
 
 # ---------------------------------------------------------------------------
 # Book pipeline — two-stage analyze_book()
@@ -224,13 +289,16 @@ def analyze_book(book_name: str, llm: "LLMProvider") -> BookAnalysisResult:
     Two-stage book analysis pipeline.
 
     Stage 1: Deterministically segment the book. For each segment, retrieve
-             text and call the LLM to produce a SegmentResult. Collect
-             SegmentResult | SegmentFailure outcomes.
+             text and call the LLM to produce a SegmentResult. Segment
+             citations are post-validated against the segment's verse range.
+             Collect SegmentResult | SegmentFailure outcomes.
 
     Stage 2: If segment failure rate is below SEGMENT_FAILURE_THRESHOLD,
              build a synthesis prompt from validated SegmentResults (with
-             explicit gap markers for failures) and call the LLM to produce
-             a BookAnalysisResult.
+             explicit gap markers for failures and verbatim cited verse texts
+             as grounding anchors) and call the LLM to produce a
+             BookAnalysisResult. Synthesis output is verified for source_segment
+             grounding and verse anchor validity.
 
     Raises:
         InvalidReferenceError: if book name is unrecognised or produces too
@@ -264,8 +332,6 @@ def analyze_book(book_name: str, llm: "LLMProvider") -> BookAnalysisResult:
     total_llm_calls = 0
 
     # Stage 1: per-segment analysis
-    # Segments are independent — this loop is a candidate for concurrent dispatch
-    # in a future phase. See LLMProvider.complete() signature for the async path.
     for seg in segments:
         if total_llm_calls >= MAX_BOOK_LLM_CALLS:
             print(
@@ -273,7 +339,6 @@ def analyze_book(book_name: str, llm: "LLMProvider") -> BookAnalysisResult:
                 f"Stopping segment processing.",
                 file=sys.stderr,
             )
-            # Record remaining segments as failures
             for remaining in segments[seg.segment_index:]:
                 segment_failures.append(SegmentFailure(
                     segment_index=remaining.segment_index,
@@ -302,21 +367,35 @@ def analyze_book(book_name: str, llm: "LLMProvider") -> BookAnalysisResult:
             )
             total_llm_calls += 1
 
-            seg_result = repair_and_validate(
+            seg_result, retry_calls = repair_and_validate(
                 raw=raw,
                 schema=SegmentResult,
                 llm=llm,
                 system_prompt=seg_system_prompt,
                 user_prompt=user_prompt,
             )
-            # repair_and_validate may have made one retry call
-            total_llm_calls += 1 if "[WARN]" in (raw or "") else 0
+            total_llm_calls += retry_calls
 
             # Stamp the segment index (model may return 0 for all segments)
             seg_result = seg_result.model_copy(update={"segment_index": seg.segment_index})
+
+            # Verify segment citations are within this segment's verse range
+            seg_passage = PassageData(
+                reference=seg.reference,
+                book=seg.book.value,
+                start_chapter=seg.start_chapter,
+                start_verse=seg.start_verse,
+                end_chapter=seg.end_chapter,
+                end_verse=seg.end_verse,
+                text=seg.text,
+                context_before=None,
+                context_after=None,
+            )
+            verify_citations(seg_result, seg_passage, mode=CitationMode.SINGLE_VERSE)
+
             segment_results.append(seg_result)
 
-        except (AnalysisFailedError, Exception) as exc:
+        except (AnalysisFailedError, CitationOutOfRangeError, Exception) as exc:
             segment_failures.append(SegmentFailure(
                 segment_index=seg.segment_index,
                 chapter_start=seg.start_chapter,
@@ -342,18 +421,42 @@ def analyze_book(book_name: str, llm: "LLMProvider") -> BookAnalysisResult:
         )
 
     # Stage 2: synthesis
+    # Build cited verse text lookup — gives synthesis model direct text anchors
+    verse_texts: dict[int, list[tuple[str, str]]] = {}
+    for seg_result in segment_results:
+        seg_texts: list[tuple[str, str]] = []
+        for citation in seg_result.citations:
+            if citation.verse_reference and ":" in citation.verse_reference:
+                try:
+                    ch_str, v_str = citation.verse_reference.split(":", 1)
+                    ch, v = int(ch_str), int(v_str)
+                    orig_seg = next(
+                        (s for s in segments if s.segment_index == seg_result.segment_index),
+                        None,
+                    )
+                    if orig_seg is not None:
+                        text = _get_verse_text(orig_seg.book.value, ch, v)
+                        if text:
+                            seg_texts.append((citation.verse_reference, text))
+                except (ValueError, AttributeError):
+                    pass
+        if seg_texts:
+            verse_texts[seg_result.segment_index] = seg_texts
+
     syn_system_prompt = build_synthesis_system_prompt()
-    syn_user_prompt = build_synthesis_user_prompt(segment_results, segment_failures)
+    syn_user_prompt = build_synthesis_user_prompt(
+        segment_results, segment_failures, verse_texts=verse_texts
+    )
 
     raw_synthesis = llm.complete(
         system=syn_system_prompt,
         prompt=syn_user_prompt,
         schema=BookAnalysisResult,
-        max_tokens=4096,   # synthesis output is larger than per-segment output
+        max_tokens=4096,
     )
     total_llm_calls += 1
 
-    book_result = repair_and_validate(
+    book_result, retry_calls = repair_and_validate(
         raw=raw_synthesis,
         schema=BookAnalysisResult,
         llm=llm,
@@ -361,6 +464,7 @@ def analyze_book(book_name: str, llm: "LLMProvider") -> BookAnalysisResult:
         user_prompt=syn_user_prompt,
         max_tokens=4096,
     )
+    total_llm_calls += retry_calls
 
     # Stamp failed segment indices into result
     if segment_failures:
@@ -368,8 +472,8 @@ def analyze_book(book_name: str, llm: "LLMProvider") -> BookAnalysisResult:
             update={"failed_segments": [f.segment_index for f in segment_failures]}
         )
 
-    # Verify synthesis grounding
-    verify_synthesis_grounding(book_result, segment_results)
+    # Verify synthesis grounding — source_segments + verse anchor range check
+    verify_synthesis_grounding(book_result, segment_results, segments)
 
     return book_result
 
@@ -397,7 +501,7 @@ def analyze_passage(
 
     raw = llm.complete(system=sys_prompt, prompt=user_prompt, schema=PassageAnalysisResult)
 
-    result = repair_and_validate(
+    result, _ = repair_and_validate(
         raw=raw,
         schema=PassageAnalysisResult,
         llm=llm,
@@ -425,9 +529,6 @@ def analyze(
     - Chapter (e.g. "John 3")          → PassageAnalysisResult
     - Book    (e.g. "1 Corinthians")   → BookAnalysisResult
 
-    Returns StudyGuideResult only when called from the legacy study-guide path
-    (maintained for backward compatibility with Phase 1 tests and CLI).
-
     Raises:
         InvalidReferenceError:   unrecognised reference or book too large.
         EmptyPassageError:       retrieved text too short to analyze.
@@ -447,31 +548,119 @@ def analyze(
         passage = retrieve_chapter(ref.book, ref.start_chapter)
         return analyze_passage(passage, llm)
 
-    # PASSAGE granularity — retrieve and run passage pipeline
+    # PASSAGE granularity — delegate to analyze_passage
     passage = retrieve_passage(reference)
+    return analyze_passage(passage, llm)
 
-    if len(passage.text.strip()) < MIN_PASSAGE_CHARS:
+
+# ---------------------------------------------------------------------------
+# find_similar pipeline
+# ---------------------------------------------------------------------------
+
+def find_similar(
+    reference: str,
+    llm: "LLMProvider | None" = None,
+    scope_book: str | None = None,
+    top_n: int = 10,
+) -> SimilarityResult:
+    """
+    Find passages similar to the seed reference using TF-IDF scoring + LLM quote extraction.
+
+    Stage 1: Retrieve seed passage.
+    Stage 2: Score all verses in scope_book (or seed's own book) by TF-IDF cosine similarity.
+    Stage 3: LLM extracts verbatim overlapping quotes from top-N candidates.
+    Stage 4: Post-validate verbatim quotes against locally retrieved text (normalised).
+    Stage 5: Stamp deterministic scorer data (overlap_terms, similarity_score).
+
+    Raises:
+        InvalidReferenceError:   unrecognised reference or scope_book.
+        EmptyPassageError:       seed passage text too short.
+        CitationOutOfRangeError: LLM cited a reference not in the candidate list,
+                                  or verbatim quote not found in local text.
+        AnalysisFailedError:     LLM output failed all repair/retry attempts.
+    """
+    if llm is None:
+        from horeb.llm import ClaudeProvider
+        llm = ClaudeProvider()
+
+    # Retrieve seed passage
+    seed_passage = retrieve_passage(reference)
+    if len(seed_passage.text.strip()) < MIN_PASSAGE_CHARS:
         raise EmptyPassageError(
-            f"Retrieved text for {reference!r} is too short "
-            f"({len(passage.text)} chars). Check the reference."
+            f"Seed passage {reference!r} is too short to find similarities."
         )
 
-    sys_prompt = build_passage_system_prompt()
-    user_prompt_str = build_passage_user_prompt(passage)
+    # Resolve optional scope book
+    scope_pb_book: pb.Book | None = None
+    if scope_book is not None:
+        try:
+            refs = pb.get_references(scope_book)
+            if not refs:
+                raise InvalidReferenceError(f"Could not find scope book: {scope_book!r}")
+            scope_pb_book = refs[0].book
+        except InvalidReferenceError:
+            raise
+        except Exception as exc:
+            raise InvalidReferenceError(f"Could not parse scope book: {scope_book!r}") from exc
 
-    raw_response = llm.complete(system=sys_prompt, prompt=user_prompt_str, schema=PassageAnalysisResult)
+    # Deterministic TF-IDF scoring (no LLM)
+    scored_candidates = score_similarity(seed_passage, scope_book=scope_pb_book, top_n=top_n)
+    if not scored_candidates:
+        return SimilarityResult(seed_ref=reference, candidates=[])
 
-    result = repair_and_validate(
-        raw=raw_response,
-        schema=PassageAnalysisResult,
+    # Build scorer lookup for post-validation and stamping
+    scorer_by_ref = {c.reference: c for c in scored_candidates}
+
+    # LLM: extract verbatim overlapping quotes
+    sys_prompt = build_similarity_system_prompt()
+    candidates_input = [(c.reference, c.text, c.overlap_terms) for c in scored_candidates]
+    user_prompt_str = build_similarity_user_prompt(seed_passage.text, reference, candidates_input)
+
+    raw = llm.complete(system=sys_prompt, prompt=user_prompt_str, schema=SimilarityResult)
+
+    result, _ = repair_and_validate(
+        raw=raw,
+        schema=SimilarityResult,
         llm=llm,
         system_prompt=sys_prompt,
         user_prompt=user_prompt_str,
     )
 
-    verify_citations(result, passage, mode=CitationMode.SINGLE_VERSE)
+    # Post-validate and stamp deterministic scorer data
+    stamped: list[SimilarOverlap] = []
+    seed_norm = _normalize_quote(seed_passage.text)
 
-    return result
+    for overlap in result.candidates:
+        # Reject LLM-invented references not in scorer candidate list
+        scorer_match = scorer_by_ref.get(overlap.candidate_ref)
+        if scorer_match is None:
+            raise CitationOutOfRangeError(
+                f"Candidate reference {overlap.candidate_ref!r} was not in the scored "
+                f"candidate list. Only provided candidates are permitted."
+            )
+
+        # Verbatim seed quote validation (normalised substring check)
+        if _normalize_quote(overlap.verbatim_seed_quote) not in seed_norm:
+            raise CitationOutOfRangeError(
+                f"verbatim_seed_quote for {overlap.candidate_ref!r} not found in seed text: "
+                f"{overlap.verbatim_seed_quote!r}"
+            )
+
+        # Verbatim candidate quote validation (normalised substring check)
+        cand_norm = _normalize_quote(scorer_match.text)
+        if _normalize_quote(overlap.verbatim_candidate_quote) not in cand_norm:
+            raise CitationOutOfRangeError(
+                f"verbatim_candidate_quote for {overlap.candidate_ref!r} not found in "
+                f"candidate text: {overlap.verbatim_candidate_quote!r}"
+            )
+
+        # Stamp deterministic scorer data (overlap_terms, similarity_score)
+        stamped.append(overlap.model_copy(update={
+            "overlap_terms": scorer_match.overlap_terms,
+            "similarity_score": scorer_match.similarity_score,
+        }))
+
+    return result.model_copy(update={"seed_ref": reference, "candidates": stamped})
 
 
 # ---------------------------------------------------------------------------
@@ -499,7 +688,7 @@ def analyze_study_guide(reference: str, llm: "LLMProvider | None" = None) -> Stu
     user_prompt = build_user_prompt(passage)
     raw_response = llm.complete(system=SYSTEM_PROMPT, prompt=user_prompt, schema=StudyGuideResult)
 
-    result = repair_and_validate(
+    result, _ = repair_and_validate(
         raw=raw_response,
         schema=StudyGuideResult,
         llm=llm,
