@@ -1,7 +1,7 @@
 from collections import Counter
 from dataclasses import dataclass
 from enum import Enum
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal
 
 from pydantic import BaseModel, field_validator, model_validator
 
@@ -151,6 +151,34 @@ class BookAnalysisResult(GroundedBase):
 # Similarity result (Phase 2 find_similar command)
 # ---------------------------------------------------------------------------
 
+EvidenceTag = Literal[
+    "shared_phrase",
+    "shared_rare_terms",
+    "shared_imagery_terms",
+    "shared_speech_act_terms",
+    "weak_match",
+]
+
+
+class TaggedCandidate(BaseModel):
+    """
+    LLM-assigned evidence tag for one TF-IDF candidate (6A safe mode).
+
+    All fields are post-validated in engine._validate_tag_result():
+    - candidate_ref must exactly match a TF-IDF candidate reference
+    - justification_terms must be a strict subset of that candidate's overlap_terms
+    Entries that fail either check are silently dropped — never raised as errors.
+    """
+    candidate_ref: str
+    tag: EvidenceTag
+    justification_terms: list[str]      # subset of overlap_terms for this candidate
+
+
+class SemanticTagResult(BaseModel):
+    """LLM output schema for the 6A evidence-tagging call."""
+    candidates: list[TaggedCandidate]
+
+
 class SimilarOverlap(BaseModel):
     """
     One candidate similar passage.
@@ -162,12 +190,17 @@ class SimilarOverlap(BaseModel):
     overlap_terms and similarity_score are stamped from the deterministic
     TF-IDF scorer after LLM validation; the LLM-produced values are discarded.
     They default to empty/zero so the LLM can omit them without failing validation.
+
+    tag and justification_terms are stamped by tag_candidates() when --tags is
+    used; they are None/empty otherwise and never affect the deterministic path.
     """
     candidate_ref: str
     verbatim_seed_quote: str            # must appear verbatim in seed passage text
     verbatim_candidate_quote: str       # must appear verbatim in candidate passage text
     overlap_terms: list[str] = []       # stamped from TF-IDF scorer post-LLM
     similarity_score: float = 0.0       # stamped from TF-IDF scorer post-LLM; 0.0–1.0
+    tag: EvidenceTag | None = None      # stamped by tag_candidates() when --tags is set
+    justification_terms: list[str] = [] # stamped by tag_candidates(); subset of overlap_terms
 
     @field_validator("similarity_score")
     @classmethod
