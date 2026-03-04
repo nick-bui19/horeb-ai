@@ -17,6 +17,9 @@ Structure:
   build_similarity_system_prompt()                           → str
   build_similarity_user_prompt(seed, candidates)            → str   (find_similar)
 
+  build_tag_system_prompt()                                 → str
+  build_tag_user_prompt(seed_text, seed_ref, candidates)   → str   (find_similar --tags / 6A)
+
   # Phase 1 backward-compat aliases (used by engine.py until Task 8 routing lands)
   SYSTEM_PROMPT     = build_passage_system_prompt()  (module-level constant)
   build_user_prompt = build_passage_user_prompt      (function alias)
@@ -285,6 +288,70 @@ def build_similarity_user_prompt(
         "\nFor each candidate, extract a single contiguous verbatim span from both "
         "the seed and the candidate that best demonstrates the shared vocabulary. "
         "Do NOT splice fragments. Return results using the provided tool."
+    )
+
+    return "\n".join(parts)
+
+
+# ---------------------------------------------------------------------------
+# find_similar — 6A evidence tagging
+# ---------------------------------------------------------------------------
+
+_EVIDENCE_TAG_RULES: str = """\
+EVIDENCE TAG RULES:
+- You must classify each candidate using ONLY one of these five tags:
+  * shared_phrase         — seed and candidate share a multi-word phrase verbatim
+  * shared_rare_terms     — seed and candidate share uncommon/specific vocabulary
+  * shared_imagery_terms  — seed and candidate share concrete image words (e.g. water, light, shepherd)
+  * shared_speech_act_terms — seed and candidate share words denoting speech or command
+  * weak_match            — some overlap exists but does not clearly fit the above
+- justification_terms MUST be drawn ONLY from the overlap_terms list provided for each candidate.
+- Do NOT introduce new terms not present in overlap_terms.
+- Do NOT assert theological meaning, doctrinal equivalence, or interpretive claims.
+- Do NOT invent candidate references not in the provided list.\
+"""
+
+
+def build_tag_system_prompt() -> str:
+    """System prompt for the 6A evidence-tagging call."""
+    return "\n\n".join([
+        "You are a textual evidence classifier for Bible passage similarity results. "
+        "Your only role is to classify vocabulary overlap between passages.",
+        _EVIDENCE_TAG_RULES,
+        _REFUSAL_INSTRUCTION,
+        _TOOL_INSTRUCTION,
+    ])
+
+
+def build_tag_user_prompt(
+    seed_text: str,
+    seed_ref: str,
+    candidates: "list",
+) -> str:
+    """
+    Build the tagging user prompt.
+
+    Args:
+        seed_text:  Full text of the seed passage with [chapter:verse] labels.
+        seed_ref:   Reference string for the seed (e.g. "John 3:16-21").
+        candidates: List of CandidateMatch objects from the TF-IDF scorer.
+    """
+    parts: list[str] = [
+        f"SEED PASSAGE ({seed_ref}):",
+        seed_text,
+        "",
+        "CANDIDATES TO CLASSIFY (each includes its overlap_terms — use ONLY these for justification_terms):",
+    ]
+
+    for c in candidates:
+        terms_str = ", ".join(f'"{t}"' for t in c.overlap_terms)
+        parts.append(f"\n[{c.reference}]")
+        parts.append(f"overlap_terms: {terms_str}")
+        parts.append(c.text)
+
+    parts.append(
+        "\nFor each candidate, assign one tag and list justification_terms drawn "
+        "strictly from its overlap_terms. Return results using the provided tool."
     )
 
     return "\n".join(parts)
