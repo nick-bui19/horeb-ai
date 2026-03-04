@@ -243,6 +243,9 @@ def build_similarity_system_prompt() -> str:
         "that overlaps with the candidate (verbatim_seed_quote).\n"
         "- You must quote the EXACT text from the candidate passage that overlaps "
         "with the seed (verbatim_candidate_quote).\n"
+        "- Both quotes must be a SINGLE CONTIGUOUS span of text exactly as it appears "
+        "in the provided passage — do NOT splice, join, or combine fragments from "
+        "different parts of the text.\n"
         "- Both quotes must appear word-for-word in the texts provided to you.\n"
         "- Do NOT assert theological parallels, interpretive connections, or thematic "
         "similarities that are not evidenced by shared vocabulary in the provided texts.\n"
@@ -279,8 +282,9 @@ def build_similarity_user_prompt(
         parts.append(text)
 
     parts.append(
-        "\nFor each candidate, extract the verbatim overlapping text from both "
-        "the seed and the candidate. Return results using the provided tool."
+        "\nFor each candidate, extract a single contiguous verbatim span from both "
+        "the seed and the candidate that best demonstrates the shared vocabulary. "
+        "Do NOT splice fragments. Return results using the provided tool."
     )
 
     return "\n".join(parts)

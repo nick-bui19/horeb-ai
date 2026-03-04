@@ -1,0 +1,30 @@
+{
+  "summary": [
+    "Ruth demonstrates loyal love in accompanying Naomi back to Bethlehem.",
+    "Boaz's kindness to Ruth in the field shows providential care for the vulnerable.",
+    "The marriage of Boaz and Ruth restores Naomi's family and inheritance."
+  ],
+  "key_themes": ["loyalty", "redemption", "faithfulness"],
+  "outline": [
+    {
+      "title": "Journey to Bethlehem",
+      "start_verse": "1:1",
+      "end_verse": "1:22",
+      "source_segments": [0]
+    },
+    {
+      "title": "Ruth gleans in the fields",
+      "start_verse": "2:1",
+      "end_verse": "2:22",
+      "source_segments": [1]
+    },
+    {
+      "title": "Marriage and restoration",
+      "start_verse": "4:1",
+      "end_verse": "4:22",
+      "source_segments": [3]
+    }
+  ],
+  "failed_segments": [],
+  "low_confidence_fields": []
+}

@@ -1,0 +1,15 @@
+{
+  "segment_index": 0,
+  "outline_label": "Naomi and her daughters",
+  "summary": [
+    "Elimelech moves his family from Bethlehem to Moab due to famine in the land.",
+    "Both sons die, leaving Naomi and her daughters-in-law as widows in Moab.",
+    "Ruth chooses to remain with Naomi and return with her to Bethlehem."
+  ],
+  "key_themes": ["loyalty", "loss", "return"],
+  "citations": [
+    {"verse_reference": "1:1", "quoted_text": "in the days when the judges ruled"},
+    {"verse_reference": "1:16", "quoted_text": "where you go I will go"}
+  ],
+  "low_confidence_fields": []
+}

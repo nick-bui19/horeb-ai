@@ -68,27 +68,27 @@ def _valid_result() -> AnalysisResult:
 class TestExitCodes:
     def test_invalid_reference_exit_code_2(self):
         with patch("horeb.cli.analyze", side_effect=InvalidReferenceError("bad ref")):
-            result = runner.invoke(app, ["John 3:abc"])
+            result = runner.invoke(app, ["analyze", "John 3:abc"])
         assert result.exit_code == EXIT_INVALID_REFERENCE
 
     def test_empty_passage_exit_code_3(self):
         with patch("horeb.cli.analyze", side_effect=EmptyPassageError("empty")):
-            result = runner.invoke(app, ["John 3:16"])
+            result = runner.invoke(app, ["analyze", "John 3:16"])
         assert result.exit_code == EXIT_EMPTY_PASSAGE
 
     def test_citation_out_of_range_exit_code_4(self):
         with patch("horeb.cli.analyze", side_effect=CitationOutOfRangeError("bad cite")):
-            result = runner.invoke(app, ["John 3:16-21"])
+            result = runner.invoke(app, ["analyze", "John 3:16-21"])
         assert result.exit_code == EXIT_CITATION_OUT_OF_RANGE
 
     def test_analysis_failed_exit_code_5(self):
         with patch("horeb.cli.analyze", side_effect=AnalysisFailedError("failed")):
-            result = runner.invoke(app, ["John 3:16-21"])
+            result = runner.invoke(app, ["analyze", "John 3:16-21"])
         assert result.exit_code == EXIT_ANALYSIS_FAILED
 
     def test_success_exit_code_0(self):
         with patch("horeb.cli.analyze", return_value=_valid_result()):
-            result = runner.invoke(app, ["John 3:16-21"])
+            result = runner.invoke(app, ["analyze", "John 3:16-21"])
         assert result.exit_code == 0
 
 
@@ -100,12 +100,12 @@ class TestErrorOutputRouting:
     def test_error_message_in_output(self):
         # CliRunner mixes stderr into output by default
         with patch("horeb.cli.analyze", side_effect=InvalidReferenceError("bad ref")):
-            result = runner.invoke(app, ["bad ref"])
+            result = runner.invoke(app, ["analyze", "bad ref"])
         assert "bad ref" in result.output
 
     def test_analysis_failed_message_in_output(self):
         with patch("horeb.cli.analyze", side_effect=AnalysisFailedError("model failed")):
-            result = runner.invoke(app, ["John 3:16-21"])
+            result = runner.invoke(app, ["analyze", "John 3:16-21"])
         assert "model failed" in result.output
 
 

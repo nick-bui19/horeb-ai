@@ -31,8 +31,6 @@ from horeb.prompts import (
     build_passage_user_prompt,
     build_segment_system_prompt,
     build_segment_user_prompt,
-    build_similarity_system_prompt,
-    build_similarity_user_prompt,
     build_synthesis_system_prompt,
     build_synthesis_user_prompt,
     build_user_prompt,
@@ -63,12 +61,53 @@ _SYNTHESIS_MAX_TOKENS: int = 6144         # output budget for synthesis (support
 # Text normalisation for verbatim quote validation
 # ---------------------------------------------------------------------------
 
+_VERSE_LABEL_RE = re.compile(r"\[\d+:\d+\]\s*")
+
+
 def _normalize_quote(text: str) -> str:
     """Lowercase, strip punctuation, collapse whitespace for substring comparison."""
     text = text.lower()
     text = re.sub(r"[^\w\s]", "", text)
     text = re.sub(r"\s+", " ", text).strip()
     return text
+
+
+def _strip_verse_labels(text: str) -> str:
+    """Remove [chapter:verse] labels from labelled passage text before quote matching.
+
+    Labels like [3:17] become '317' after _normalize_quote strips punctuation,
+    which breaks multi-verse quote matching since the LLM's verbatim quotes don't
+    include labels.
+    """
+    return _VERSE_LABEL_RE.sub("", text)
+
+
+def _strip_candidate_label(candidate_text: str) -> str:
+    """Strip the [ch:v] prefix from a single-verse candidate text."""
+    return _VERSE_LABEL_RE.sub("", candidate_text).strip()
+
+
+def _best_seed_verse(seed_text: str, overlap_terms: list[str]) -> str:
+    """Split seed text on [ch:v] labels; return the verse with the most overlap_terms.
+
+    Falls back to the full stripped text if no labeled verses are found.
+    """
+    verse_texts = re.split(r"\[\d+:\d+\]\s*", seed_text)
+    verse_texts = [v.strip() for v in verse_texts if v.strip()]
+
+    if not verse_texts:
+        return seed_text.strip()
+
+    if len(verse_texts) == 1 or not overlap_terms:
+        return verse_texts[0]
+
+    overlap_set = {t.lower() for t in overlap_terms}
+
+    def count_overlap(text: str) -> int:
+        words = set(re.sub(r"[^\w\s]", "", text.lower()).split())
+        return len(words & overlap_set)
+
+    return max(verse_texts, key=count_overlap)
 
 
 # ---------------------------------------------------------------------------
@@ -606,30 +645,22 @@ def analyze(
 
 def find_similar(
     reference: str,
-    llm: "LLMProvider | None" = None,
     scope_book: str | None = None,
     top_n: int = 10,
 ) -> SimilarityResult:
     """
-    Find passages similar to the seed reference using TF-IDF scoring + LLM quote extraction.
+    Find passages similar to the seed reference using TF-IDF scoring (fully deterministic).
+    No LLM calls are made.
 
     Stage 1: Retrieve seed passage.
-    Stage 2: Score all verses in scope_book (or seed's own book) by TF-IDF cosine similarity.
-    Stage 3: LLM extracts verbatim overlapping quotes from top-N candidates.
-    Stage 4: Post-validate verbatim quotes against locally retrieved text (normalised).
-    Stage 5: Stamp deterministic scorer data (overlap_terms, similarity_score).
+    Stage 2: Resolve optional scope_book.
+    Stage 3: TF-IDF scoring → scored_candidates.
+    Stage 4: Build SimilarOverlap from scorer data directly.
 
     Raises:
-        InvalidReferenceError:   unrecognised reference or scope_book.
-        EmptyPassageError:       seed passage text too short.
-        CitationOutOfRangeError: LLM cited a reference not in the candidate list,
-                                  or verbatim quote not found in local text.
-        AnalysisFailedError:     LLM output failed all repair/retry attempts.
+        InvalidReferenceError: unrecognised reference or scope_book.
+        EmptyPassageError:     seed passage text too short.
     """
-    if llm is None:
-        from horeb.llm import ClaudeProvider
-        llm = ClaudeProvider()
-
     # Retrieve seed passage
     seed_passage = retrieve_passage(reference)
     if len(seed_passage.text.strip()) < MIN_PASSAGE_CHARS:
@@ -655,59 +686,19 @@ def find_similar(
     if not scored_candidates:
         return SimilarityResult(seed_ref=reference, candidates=[])
 
-    # Build scorer lookup for post-validation and stamping
-    scorer_by_ref = {c.reference: c for c in scored_candidates}
+    candidates: list[SimilarOverlap] = []
+    for c in scored_candidates:
+        verbatim_candidate_quote = _strip_candidate_label(c.text)
+        verbatim_seed_quote = _best_seed_verse(seed_passage.text, c.overlap_terms)
+        candidates.append(SimilarOverlap(
+            candidate_ref=c.reference,
+            verbatim_seed_quote=verbatim_seed_quote,
+            verbatim_candidate_quote=verbatim_candidate_quote,
+            overlap_terms=c.overlap_terms,
+            similarity_score=c.similarity_score,
+        ))
 
-    # LLM: extract verbatim overlapping quotes
-    sys_prompt = build_similarity_system_prompt()
-    candidates_input = [(c.reference, c.text, c.overlap_terms) for c in scored_candidates]
-    user_prompt_str = build_similarity_user_prompt(seed_passage.text, reference, candidates_input)
-
-    raw = llm.complete(system=sys_prompt, prompt=user_prompt_str, schema=SimilarityResult)
-
-    result, _ = repair_and_validate(
-        raw=raw,
-        schema=SimilarityResult,
-        llm=llm,
-        system_prompt=sys_prompt,
-        user_prompt=user_prompt_str,
-    )
-
-    # Post-validate and stamp deterministic scorer data
-    stamped: list[SimilarOverlap] = []
-    seed_norm = _normalize_quote(seed_passage.text)
-
-    for overlap in result.candidates:
-        # Reject LLM-invented references not in scorer candidate list
-        scorer_match = scorer_by_ref.get(overlap.candidate_ref)
-        if scorer_match is None:
-            raise CitationOutOfRangeError(
-                f"Candidate reference {overlap.candidate_ref!r} was not in the scored "
-                f"candidate list. Only provided candidates are permitted."
-            )
-
-        # Verbatim seed quote validation (normalised substring check)
-        if _normalize_quote(overlap.verbatim_seed_quote) not in seed_norm:
-            raise CitationOutOfRangeError(
-                f"verbatim_seed_quote for {overlap.candidate_ref!r} not found in seed text: "
-                f"{overlap.verbatim_seed_quote!r}"
-            )
-
-        # Verbatim candidate quote validation (normalised substring check)
-        cand_norm = _normalize_quote(scorer_match.text)
-        if _normalize_quote(overlap.verbatim_candidate_quote) not in cand_norm:
-            raise CitationOutOfRangeError(
-                f"verbatim_candidate_quote for {overlap.candidate_ref!r} not found in "
-                f"candidate text: {overlap.verbatim_candidate_quote!r}"
-            )
-
-        # Stamp deterministic scorer data (overlap_terms, similarity_score)
-        stamped.append(overlap.model_copy(update={
-            "overlap_terms": scorer_match.overlap_terms,
-            "similarity_score": scorer_match.similarity_score,
-        }))
-
-    return result.model_copy(update={"seed_ref": reference, "candidates": stamped})
+    return SimilarityResult(seed_ref=reference, candidates=candidates)
 
 
 # ---------------------------------------------------------------------------

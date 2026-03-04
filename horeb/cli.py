@@ -31,25 +31,18 @@ app = typer.Typer(
     name="horeb",
     help="CLI-first AI engine for grounded Bible passage analysis.",
     add_completion=False,
-    invoke_without_command=True,
+    no_args_is_help=True,
 )
 
 
-@app.callback()
-def main(
-    ctx: typer.Context,
+@app.command(name="analyze")
+def analyze_cmd(
     reference: str = typer.Argument(
-        None,
+        ...,
         help="Bible reference: passage ('John 3:16-21'), chapter ('John 3'), or book ('Ruth')",
     ),
 ) -> None:
     """Analyse a Bible reference (passage, chapter, or whole book)."""
-    if ctx.invoked_subcommand is not None:
-        # A subcommand (e.g. find-similar) was invoked; don't run analyze.
-        return
-    if reference is None:
-        typer.echo(ctx.get_help())
-        raise typer.Exit(0)
     try:
         result = analyze(reference)
         _print_result(result)

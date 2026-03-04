@@ -11,7 +11,6 @@ Covers test matrix items:
 - 24: verify_synthesis_grounding() all failure modes
 - 25: find_similar() verbatim grounding and scorer stamping
 """
-import json
 from unittest.mock import patch
 
 import pytest
@@ -264,12 +263,12 @@ class TestAnalyzeRouting:
 
 class TestAnalyzePassage:
     def test_valid_fixture_returns_passage_result(self):
-        llm = FixtureLLMProvider(load_fixture("passage_john_3_16_valid.json"))
+        llm = FixtureLLMProvider(load_fixture("john_3_16_valid.json", subdir="passage"))
         result = analyze_passage(retrieve_passage("John 3:16-21"), llm)
         assert isinstance(result, PassageAnalysisResult)
 
     def test_result_has_3_summary_items(self):
-        llm = FixtureLLMProvider(load_fixture("passage_john_3_16_valid.json"))
+        llm = FixtureLLMProvider(load_fixture("john_3_16_valid.json", subdir="passage"))
         result = analyze_passage(retrieve_passage("John 3:16-21"), llm)
         assert len(result.summary) == 3
 
@@ -291,7 +290,7 @@ class TestAnalyzePassage:
         assert llm.call_count == 0
 
     def test_out_of_range_citation_raises(self):
-        llm = FixtureLLMProvider(load_fixture("passage_john_3_16_out_of_range.json"))
+        llm = FixtureLLMProvider(load_fixture("john_3_16_out_of_range.json", subdir="passage"))
         with pytest.raises(CitationOutOfRangeError):
             analyze_passage(retrieve_passage("John 3:16-21"), llm)
 
@@ -388,76 +387,65 @@ class TestVerifySynthesisGrounding:
 
 
 # ---------------------------------------------------------------------------
-# find_similar() verbatim grounding and scorer stamping
+# find_similar() — deterministic, no LLM
 # ---------------------------------------------------------------------------
 
 class TestFindSimilar:
-    def test_scorer_data_stamped_over_llm_fields(self):
-        """Scorer overlap_terms and similarity_score overwrite LLM-provided values."""
-        llm_response = json.dumps({
-            "seed_ref": "John 3:16-21",
-            "candidates": [{
-                "candidate_ref": "John 1:12",
-                "verbatim_seed_quote": "God so loved the world",
-                "verbatim_candidate_quote": "believed on his name received",
-                "overlap_terms": ["fabricated"],
-                "similarity_score": 0.01,
-            }],
-        })
-        llm = FixtureLLMProvider(llm_response)
+    def test_scorer_data_stamped_correctly(self):
+        """overlap_terms and similarity_score come directly from CandidateMatch."""
         with patch("horeb.engine.retrieve_passage", return_value=_make_seed_passage()):
             with patch("horeb.engine.score_similarity", return_value=[_make_candidate_match()]):
-                result = find_similar("John 3:16-21", llm=llm)
+                result = find_similar("John 3:16-21")
         assert result.candidates[0].similarity_score == 0.75
         assert result.candidates[0].overlap_terms == ["believed", "name"]
 
-    def test_invented_reference_raises(self):
-        llm_response = json.dumps({
-            "seed_ref": "John 3:16-21",
-            "candidates": [{
-                "candidate_ref": "John 5:24",
-                "verbatim_seed_quote": "God so loved the world",
-                "verbatim_candidate_quote": "some text",
-            }],
-        })
-        with patch("horeb.engine.retrieve_passage", return_value=_make_seed_passage()):
-            with patch("horeb.engine.score_similarity", return_value=[_make_candidate_match()]):
-                with pytest.raises(CitationOutOfRangeError):
-                    find_similar("John 3:16-21", llm=FixtureLLMProvider(llm_response))
-
-    def test_bad_seed_quote_raises(self):
-        llm_response = json.dumps({
-            "seed_ref": "John 3:16-21",
-            "candidates": [{
-                "candidate_ref": "John 1:12",
-                "verbatim_seed_quote": "completely fabricated text not in seed",
-                "verbatim_candidate_quote": "believed on his name received",
-            }],
-        })
-        with patch("horeb.engine.retrieve_passage", return_value=_make_seed_passage()):
-            with patch("horeb.engine.score_similarity", return_value=[_make_candidate_match()]):
-                with pytest.raises(CitationOutOfRangeError):
-                    find_similar("John 3:16-21", llm=FixtureLLMProvider(llm_response))
-
-    def test_bad_candidate_quote_raises(self):
-        llm_response = json.dumps({
-            "seed_ref": "John 3:16-21",
-            "candidates": [{
-                "candidate_ref": "John 1:12",
-                "verbatim_seed_quote": "God so loved the world",
-                "verbatim_candidate_quote": "completely fabricated text not in candidate",
-            }],
-        })
-        with patch("horeb.engine.retrieve_passage", return_value=_make_seed_passage()):
-            with patch("horeb.engine.score_similarity", return_value=[_make_candidate_match()]):
-                with pytest.raises(CitationOutOfRangeError):
-                    find_similar("John 3:16-21", llm=FixtureLLMProvider(llm_response))
-
-    def test_empty_candidates_returns_empty_result_without_llm_call(self):
-        llm = FixtureLLMProvider("should not be called")
+    def test_empty_candidates_returns_empty_result(self):
         with patch("horeb.engine.retrieve_passage", return_value=_make_seed_passage()):
             with patch("horeb.engine.score_similarity", return_value=[]):
-                result = find_similar("John 3:16-21", llm=llm)
+                result = find_similar("John 3:16-21")
         assert result.seed_ref == "John 3:16-21"
         assert result.candidates == []
-        assert llm.call_count == 0
+
+    def test_verbatim_candidate_quote_strips_label(self):
+        """[ch:v] prefix is stripped from single-verse candidate text."""
+        candidate = CandidateMatch(
+            reference="John 1:12",
+            text="[1:12] As many as believed on his name received him.",
+            similarity_score=0.75,
+            overlap_terms=["believed", "name"],
+        )
+        with patch("horeb.engine.retrieve_passage", return_value=_make_seed_passage()):
+            with patch("horeb.engine.score_similarity", return_value=[candidate]):
+                result = find_similar("John 3:16-21")
+        assert result.candidates[0].verbatim_candidate_quote == (
+            "As many as believed on his name received him."
+        )
+
+    def test_verbatim_seed_quote_picks_best_verse(self):
+        """Verse with most overlap terms is selected from multi-verse seed."""
+        seed = PassageData(
+            reference="John 3:16-17",
+            book=43,
+            start_chapter=3,
+            start_verse=16,
+            end_chapter=3,
+            end_verse=17,
+            text=(
+                "[3:16] God so loved the world that he gave his only Son. "
+                "[3:17] God sent not his Son into the world to condemn the world."
+            ),
+            context_before=None,
+            context_after=None,
+        )
+        # overlap_terms includes "gave" which appears only in verse 3:16
+        candidate = CandidateMatch(
+            reference="John 1:12",
+            text="[1:12] As many as received him.",
+            similarity_score=0.5,
+            overlap_terms=["gave", "loved"],
+        )
+        with patch("horeb.engine.retrieve_passage", return_value=seed):
+            with patch("horeb.engine.score_similarity", return_value=[candidate]):
+                result = find_similar("John 3:16-17")
+        quote = result.candidates[0].verbatim_seed_quote.lower()
+        assert "gave" in quote or "loved" in quote
