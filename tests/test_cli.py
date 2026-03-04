@@ -350,3 +350,128 @@ class TestPrintSimilarResult:
         _print_similar_result(result)
         out = capsys.readouterr().out
         assert "SIMILAR PASSAGES" not in out
+
+    def test_tag_printed_when_present(self, capsys):
+        result = SimilarityResult(
+            seed_ref="John 3:16",
+            candidates=[
+                SimilarOverlap(
+                    candidate_ref="John 3:17",
+                    verbatim_seed_quote="God loved",
+                    verbatim_candidate_quote="sent not",
+                    overlap_terms=["world"],
+                    similarity_score=0.5,
+                    tag="shared_phrase",
+                    justification_terms=["world"],
+                ),
+            ],
+        )
+        _print_similar_result(result)
+        out = capsys.readouterr().out
+        assert "shared_phrase" in out
+        assert "world" in out
+
+    def test_no_tag_line_when_tag_is_none(self, capsys):
+        result = SimilarityResult(
+            seed_ref="John 3:16",
+            candidates=[
+                SimilarOverlap(
+                    candidate_ref="John 3:17",
+                    verbatim_seed_quote="God loved",
+                    verbatim_candidate_quote="sent not",
+                    overlap_terms=["world"],
+                    similarity_score=0.5,
+                    tag=None,
+                ),
+            ],
+        )
+        _print_similar_result(result)
+        out = capsys.readouterr().out
+        assert "Tag:" not in out
+
+
+# ---------------------------------------------------------------------------
+# --output flag: analyze command writes markdown file
+# ---------------------------------------------------------------------------
+
+class TestOutputFlag:
+    def test_analyze_output_writes_file(self, tmp_path):
+        out_file = tmp_path / "result.md"
+        with patch("horeb.cli.analyze", return_value=PassageAnalysisResult(
+            summary=["A.", "B.", "C."],
+            key_themes=["faith"],
+            citations=[],
+        )):
+            result = runner.invoke(app, ["analyze", "John 3:16-21", "--output", str(out_file)])
+        assert result.exit_code == 0
+        assert out_file.exists()
+        content = out_file.read_text()
+        assert "# Analysis:" in content
+        assert "## Summary" in content
+
+    def test_analyze_output_no_stdout(self, tmp_path):
+        out_file = tmp_path / "result.md"
+        with patch("horeb.cli.analyze", return_value=PassageAnalysisResult(
+            summary=["A.", "B.", "C."],
+            key_themes=["faith"],
+            citations=[],
+        )):
+            result = runner.invoke(app, ["analyze", "John 3:16-21", "--output", str(out_file)])
+        # stdout should be empty when --output is used
+        assert result.output.strip() == ""
+
+    def test_analyze_without_output_prints_stdout(self):
+        with patch("horeb.cli.analyze", return_value=PassageAnalysisResult(
+            summary=["A.", "B.", "C."],
+            key_themes=["faith"],
+            citations=[],
+        )):
+            result = runner.invoke(app, ["analyze", "John 3:16-21"])
+        assert result.exit_code == 0
+        assert "SUMMARY" in result.output
+
+    def test_find_similar_output_writes_file(self, tmp_path):
+        out_file = tmp_path / "similar.md"
+        with patch("horeb.cli._find_similar", return_value=SimilarityResult(
+            seed_ref="John 3:16-21",
+            candidates=[],
+        )):
+            result = runner.invoke(app, ["find-similar", "John 3:16-21", "--output", str(out_file)])
+        assert result.exit_code == 0
+        assert out_file.exists()
+        content = out_file.read_text()
+        assert "# Similar Passages:" in content
+
+    def test_output_flag_bad_dir_exits_1(self, tmp_path):
+        nonexistent = tmp_path / "no_such_dir" / "result.md"
+        with patch("horeb.cli.analyze", return_value=PassageAnalysisResult(
+            summary=["A.", "B.", "C."],
+            key_themes=[],
+            citations=[],
+        )):
+            result = runner.invoke(app, ["analyze", "John 3:16-21", "--output", str(nonexistent)])
+        assert result.exit_code == 1
+
+
+# ---------------------------------------------------------------------------
+# --tags flag: find-similar passes tags=True to find_similar
+# ---------------------------------------------------------------------------
+
+class TestTagsFlag:
+    def test_tags_flag_passed_to_find_similar(self):
+        with patch("horeb.cli._find_similar", return_value=SimilarityResult(
+            seed_ref="John 3:16-21", candidates=[]
+        )) as mock_find:
+            runner.invoke(app, ["find-similar", "John 3:16-21", "--tags"])
+        mock_find.assert_called_once()
+        _, kwargs = mock_find.call_args
+        assert kwargs.get("tags") is True
+
+    def test_no_tags_flag_default_false(self):
+        with patch("horeb.cli._find_similar", return_value=SimilarityResult(
+            seed_ref="John 3:16-21", candidates=[]
+        )) as mock_find:
+            runner.invoke(app, ["find-similar", "John 3:16-21"])
+        mock_find.assert_called_once()
+        _, kwargs = mock_find.call_args
+        assert kwargs.get("tags") is False
