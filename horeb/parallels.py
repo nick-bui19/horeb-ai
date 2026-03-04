@@ -13,6 +13,7 @@ The score is deterministic: same seed + same scope always returns the same ranki
 """
 from __future__ import annotations
 
+import functools
 import math
 import re
 from dataclasses import dataclass, field
@@ -169,6 +170,20 @@ def _ranked_overlap_terms(
 # Public API
 # ---------------------------------------------------------------------------
 
+@functools.lru_cache(maxsize=None)
+def _get_book_tfidf(book: pb.Book) -> tuple[list[_VerseDoc], dict[str, float]]:
+    """
+    Build and cache the TF-IDF corpus and IDF table for the given book.
+
+    lru_cache eliminates repeated tokenisation and IDF computation across
+    multiple find_similar calls on the same book (common in library/REPL use).
+    The corpus and IDF table are read-only after construction, so caching is safe.
+    """
+    corpus = _build_corpus(book)
+    idf = _compute_idf(corpus)
+    return corpus, idf
+
+
 def score_similarity(
     seed: PassageData,
     scope_book: pb.Book | None = None,
@@ -190,11 +205,9 @@ def score_similarity(
     book = scope_book if scope_book is not None else pb.Book(seed.book)
     book_name = book.name.replace("_", " ").title()
 
-    corpus = _build_corpus(book)
+    corpus, idf = _get_book_tfidf(book)
     if not corpus:
         return []
-
-    idf = _compute_idf(corpus)
 
     # Build seed vector from all tokens in the seed passage text
     seed_tokens = _tokenise(seed.text)

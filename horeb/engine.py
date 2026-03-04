@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import re
 import sys
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from enum import Enum
 from typing import TYPE_CHECKING
 
@@ -54,6 +55,8 @@ if TYPE_CHECKING:
 
 MIN_PASSAGE_CHARS: int = 20
 SEGMENT_FAILURE_THRESHOLD: float = 0.3   # abort book if >30% of segments fail
+_MAX_PARALLEL_WORKERS: int = 5            # concurrent segment LLM calls in book pipeline stage 1
+_SYNTHESIS_MAX_TOKENS: int = 6144         # output budget for synthesis (supports 60-section outlines)
 
 
 # ---------------------------------------------------------------------------
@@ -281,6 +284,80 @@ def verify_synthesis_grounding(
 
 
 # ---------------------------------------------------------------------------
+# Book pipeline — segment worker (called concurrently from analyze_book stage 1)
+# ---------------------------------------------------------------------------
+
+def _run_segment(
+    seg: "Segment",
+    llm: "LLMProvider",
+    seg_system_prompt: str,
+) -> "tuple[SegmentResult | SegmentFailure, int]":
+    """
+    Analyze one book segment. Returns (result, llm_calls_made).
+
+    Always returns a value — exceptions are caught and converted to SegmentFailure.
+    Stateless and safe to call from multiple threads concurrently.
+    """
+    if len(seg.text.strip()) < MIN_PASSAGE_CHARS:
+        return (
+            SegmentFailure(
+                segment_index=seg.segment_index,
+                chapter_start=seg.start_chapter,
+                chapter_end=seg.end_chapter,
+                error="Segment text too short",
+            ),
+            0,
+        )
+
+    user_prompt = build_segment_user_prompt(seg.text, seg.reference, seg.segment_index)
+    calls = 0
+    try:
+        raw = llm.complete(
+            system=seg_system_prompt,
+            prompt=user_prompt,
+            schema=SegmentResult,
+        )
+        calls += 1
+
+        seg_result, retry_calls = repair_and_validate(
+            raw=raw,
+            schema=SegmentResult,
+            llm=llm,
+            system_prompt=seg_system_prompt,
+            user_prompt=user_prompt,
+        )
+        calls += retry_calls
+
+        seg_result = seg_result.model_copy(update={"segment_index": seg.segment_index})
+
+        seg_passage = PassageData(
+            reference=seg.reference,
+            book=seg.book.value,
+            start_chapter=seg.start_chapter,
+            start_verse=seg.start_verse,
+            end_chapter=seg.end_chapter,
+            end_verse=seg.end_verse,
+            text=seg.text,
+            context_before=None,
+            context_after=None,
+        )
+        verify_citations(seg_result, seg_passage, mode=CitationMode.SINGLE_VERSE)
+
+        return seg_result, calls
+
+    except Exception as exc:
+        return (
+            SegmentFailure(
+                segment_index=seg.segment_index,
+                chapter_start=seg.start_chapter,
+                chapter_end=seg.end_chapter,
+                error=str(exc),
+            ),
+            calls,
+        )
+
+
+# ---------------------------------------------------------------------------
 # Book pipeline — two-stage analyze_book()
 # ---------------------------------------------------------------------------
 
@@ -331,79 +408,40 @@ def analyze_book(book_name: str, llm: "LLMProvider") -> BookAnalysisResult:
     segment_failures: list[SegmentFailure] = []
     total_llm_calls = 0
 
-    # Stage 1: per-segment analysis
-    for list_pos, seg in enumerate(segments):
-        if total_llm_calls >= MAX_BOOK_LLM_CALLS:
-            print(
-                f"[WARN] Reached MAX_BOOK_LLM_CALLS={MAX_BOOK_LLM_CALLS}. "
-                f"Stopping segment processing.",
-                file=sys.stderr,
-            )
-            # Use list position, not segment_index: segment_index may not equal
-            # list position if earlier segments were skipped (MIN_PASSAGE_CHARS).
-            for remaining in segments[list_pos:]:
-                segment_failures.append(SegmentFailure(
-                    segment_index=remaining.segment_index,
-                    chapter_start=remaining.start_chapter,
-                    chapter_end=remaining.end_chapter,
-                    error="MAX_BOOK_LLM_CALLS ceiling reached",
-                ))
-            break
-
-        if len(seg.text.strip()) < MIN_PASSAGE_CHARS:
+    # Pre-flight ceiling: reserve 2 calls for synthesis + 1 retry
+    max_processable = (MAX_BOOK_LLM_CALLS - 2) // 2
+    if len(segments) > max_processable:
+        print(
+            f"[WARN] {len(segments)} segments exceeds processable limit "
+            f"({max_processable}) for MAX_BOOK_LLM_CALLS={MAX_BOOK_LLM_CALLS}. "
+            f"Last {len(segments) - max_processable} segment(s) will be skipped.",
+            file=sys.stderr,
+        )
+        for seg in segments[max_processable:]:
             segment_failures.append(SegmentFailure(
                 segment_index=seg.segment_index,
                 chapter_start=seg.start_chapter,
                 chapter_end=seg.end_chapter,
-                error="Segment text too short",
+                error="MAX_BOOK_LLM_CALLS ceiling reached",
             ))
-            continue
+    segs_to_process = segments[:max_processable]
 
-        user_prompt = build_segment_user_prompt(seg.text, seg.reference, seg.segment_index)
+    # Stage 1: per-segment analysis (parallelized — calls are I/O-bound and independent)
+    with ThreadPoolExecutor(max_workers=_MAX_PARALLEL_WORKERS) as executor:
+        future_map = {
+            executor.submit(_run_segment, seg, llm, seg_system_prompt): seg
+            for seg in segs_to_process
+        }
+        for future in as_completed(future_map):
+            result, calls = future.result()
+            total_llm_calls += calls
+            if isinstance(result, SegmentResult):
+                segment_results.append(result)
+            else:
+                segment_failures.append(result)
 
-        try:
-            raw = llm.complete(
-                system=seg_system_prompt,
-                prompt=user_prompt,
-                schema=SegmentResult,
-            )
-            total_llm_calls += 1
-
-            seg_result, retry_calls = repair_and_validate(
-                raw=raw,
-                schema=SegmentResult,
-                llm=llm,
-                system_prompt=seg_system_prompt,
-                user_prompt=user_prompt,
-            )
-            total_llm_calls += retry_calls
-
-            # Stamp the segment index (model may return 0 for all segments)
-            seg_result = seg_result.model_copy(update={"segment_index": seg.segment_index})
-
-            # Verify segment citations are within this segment's verse range
-            seg_passage = PassageData(
-                reference=seg.reference,
-                book=seg.book.value,
-                start_chapter=seg.start_chapter,
-                start_verse=seg.start_verse,
-                end_chapter=seg.end_chapter,
-                end_verse=seg.end_verse,
-                text=seg.text,
-                context_before=None,
-                context_after=None,
-            )
-            verify_citations(seg_result, seg_passage, mode=CitationMode.SINGLE_VERSE)
-
-            segment_results.append(seg_result)
-
-        except (AnalysisFailedError, CitationOutOfRangeError, Exception) as exc:
-            segment_failures.append(SegmentFailure(
-                segment_index=seg.segment_index,
-                chapter_start=seg.start_chapter,
-                chapter_end=seg.end_chapter,
-                error=str(exc),
-            ))
+    # Restore deterministic ordering (as_completed yields in completion order)
+    segment_results.sort(key=lambda r: r.segment_index)
 
     # Check failure threshold
     failure_rate = len(segment_failures) / total if total > 0 else 0.0
@@ -450,11 +488,18 @@ def analyze_book(book_name: str, llm: "LLMProvider") -> BookAnalysisResult:
         segment_results, segment_failures, verse_texts=verse_texts
     )
 
+    syn_chars = len(syn_system_prompt) + len(syn_user_prompt)
+    print(
+        f"[INFO] Synthesis prompt: {syn_chars:,} chars (~{syn_chars // 4:,} tokens), "
+        f"max_output={_SYNTHESIS_MAX_TOKENS} tokens.",
+        file=sys.stderr,
+    )
+
     raw_synthesis = llm.complete(
         system=syn_system_prompt,
         prompt=syn_user_prompt,
         schema=BookAnalysisResult,
-        max_tokens=4096,
+        max_tokens=_SYNTHESIS_MAX_TOKENS,
     )
     total_llm_calls += 1
 
@@ -464,7 +509,7 @@ def analyze_book(book_name: str, llm: "LLMProvider") -> BookAnalysisResult:
         llm=llm,
         system_prompt=syn_system_prompt,
         user_prompt=syn_user_prompt,
-        max_tokens=4096,
+        max_tokens=_SYNTHESIS_MAX_TOKENS,
     )
     total_llm_calls += retry_calls
 

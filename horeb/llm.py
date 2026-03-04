@@ -10,6 +10,7 @@ from horeb.errors import AnalysisFailedError
 
 _MODEL = "claude-haiku-4-5-20251001"
 _DEFAULT_MAX_TOKENS = 2048
+_TOOL_SCHEMA_OVERHEAD: int = 200  # approximate additional tokens for injected tool schema JSON
 
 
 class LLMProvider(Protocol):
@@ -78,11 +79,12 @@ class ClaudeProvider:
 
         if os.environ.get("HOREB_DEBUG") == "1":
             total_chars = len(system) + len(prompt)
-            estimated_tokens = total_chars // 4
+            schema_tokens = _TOOL_SCHEMA_OVERHEAD if schema is not None else 0
+            estimated_tokens = total_chars // 4 + schema_tokens
+            schema_note = f" + ~{schema_tokens} tool schema" if schema is not None else ""
             print(
-                f"[DEBUG] Prompt chars: {total_chars}, "
-                f"estimated tokens: ~{estimated_tokens}, "
-                f"max_tokens: {tokens}",
+                f"[DEBUG] Prompt chars: {total_chars} (~{total_chars // 4} tokens"
+                f"{schema_note}) = ~{estimated_tokens} total, max_tokens: {tokens}",
                 file=sys.stderr,
             )
 
