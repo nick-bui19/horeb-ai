@@ -1,0 +1,19 @@
+{
+  "candidates": [
+    {
+      "candidate_ref": "John 3:17",
+      "tag": "shared_phrase",
+      "justification_terms": ["world", "save"]
+    },
+    {
+      "candidate_ref": "John 3:18",
+      "tag": "shared_rare_terms",
+      "justification_terms": ["condemned", "believe"]
+    },
+    {
+      "candidate_ref": "John 3:19",
+      "tag": "shared_imagery_terms",
+      "justification_terms": ["light", "darkness"]
+    }
+  ]
+}

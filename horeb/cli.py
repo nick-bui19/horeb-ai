@@ -1,4 +1,5 @@
 import sys
+from pathlib import Path
 
 import typer
 from dotenv import load_dotenv
@@ -13,6 +14,7 @@ from horeb.errors import (
     HorebError,
     InvalidReferenceError,
 )
+from horeb.markdown import extract_sections, render_analysis_md, render_similar_md
 from horeb.schemas import (
     BookAnalysisResult,
     PassageAnalysisResult,
@@ -41,11 +43,18 @@ def analyze_cmd(
         ...,
         help="Bible reference: passage ('John 3:16-21'), chapter ('John 3'), or book ('Ruth')",
     ),
+    output: Path | None = typer.Option(
+        None, "--output", help="Write result as Markdown to this file path (e.g. notes.md)",
+        writable=True, resolve_path=True,
+    ),
 ) -> None:
     """Analyse a Bible reference (passage, chapter, or whole book)."""
     try:
         result = analyze(reference)
-        _print_result(result)
+        if output is not None:
+            _write_markdown(render_analysis_md(result, reference), output)
+        else:
+            _print_result(result, reference)
     except InvalidReferenceError as exc:
         typer.echo(f"Error: {exc}", err=True)
         raise typer.Exit(code=EXIT_INVALID_REFERENCE)
@@ -78,11 +87,18 @@ def find_similar_cmd(
     tags: bool = typer.Option(
         False, "--tags", help="Assign evidence tags to candidates via one LLM call (6A safe mode)"
     ),
+    output: Path | None = typer.Option(
+        None, "--output", help="Write result as Markdown to this file path (e.g. similar.md)",
+        writable=True, resolve_path=True,
+    ),
 ) -> None:
     """Find passages similar to the seed reference using TF-IDF scoring."""
     try:
         result = _find_similar(reference, scope_book=book, top_n=top_n, tags=tags)
-        _print_similar_result(result)
+        if output is not None:
+            _write_markdown(render_similar_md(result), output)
+        else:
+            _print_similar_result(result)
     except InvalidReferenceError as exc:
         typer.echo(f"Error: {exc}", err=True)
         raise typer.Exit(code=EXIT_INVALID_REFERENCE)
@@ -100,47 +116,59 @@ def find_similar_cmd(
         raise typer.Exit(code=1)
 
 
+def _write_markdown(content: str, path: "Path") -> None:
+    """Write markdown content to path, exiting cleanly on file errors."""
+    try:
+        path.write_text(content, encoding="utf-8")
+    except OSError as exc:
+        typer.echo(f"Error: could not write to {path}: {exc}", err=True)
+        raise typer.Exit(code=1)
+
+
 def _print_result(
     result: "StudyGuideResult | PassageAnalysisResult | BookAnalysisResult",
+    reference: str = "",
 ) -> None:
-    """Format and print any analyze result to stdout."""
+    """Format and print any analyze result to stdout using extract_sections()."""
+    sections = extract_sections(result, reference)
+
     print("=== SUMMARY ===")
-    for sentence in result.summary:
+    for sentence in sections.summary:
         print(f"  - {sentence}")
 
     print("\n=== KEY THEMES ===")
-    if result.key_themes:
-        for theme in result.key_themes[:5]:
+    if sections.themes:
+        for theme in sections.themes[:5]:
             print(f"  - {theme}")
     else:
         print("  (not determined from passage text)")
 
-    if isinstance(result, StudyGuideResult):
-        if result.questions:
-            print("\n=== STUDY QUESTIONS ===")
-            for i, q in enumerate(result.questions, 1):
-                print(f"  {i}. [{q.type.value}] {q.text}")
-                if q.verse_reference:
-                    print(f"     (cf. {q.verse_reference})")
-    elif isinstance(result, PassageAnalysisResult):
-        if result.citations:
-            print("\n=== CITATIONS ===")
-            for c in result.citations:
-                snippet = f" — {c.quoted_text}" if c.quoted_text else ""
-                print(f"  [{c.verse_reference}]{snippet}")
-    elif isinstance(result, BookAnalysisResult):
-        if result.outline:
-            print("\n=== OUTLINE ===")
-            for section in result.outline:
-                print(f"  {section.title} ({section.start_verse}–{section.end_verse})")
-                if section.summary:
-                    print(f"    {section.summary}")
-        if result.failed_segments:
-            count = len(result.failed_segments)
-            print(f"\n[NOTE] {count} segment(s) could not be analyzed: {result.failed_segments}")
+    if sections.questions:
+        print("\n=== STUDY QUESTIONS ===")
+        for i, (qtype, text, verse_ref) in enumerate(sections.questions, 1):
+            print(f"  {i}. [{qtype}] {text}")
+            if verse_ref:
+                print(f"     (cf. {verse_ref})")
 
-    if result.low_confidence_fields:
-        fields = ", ".join(result.low_confidence_fields)
+    if sections.citations:
+        print("\n=== CITATIONS ===")
+        for verse_ref, quoted_text in sections.citations:
+            snippet = f" — {quoted_text}" if quoted_text else ""
+            print(f"  [{verse_ref}]{snippet}")
+
+    if sections.outline:
+        print("\n=== OUTLINE ===")
+        for section in sections.outline:
+            print(f"  {section.title} ({section.start_verse}–{section.end_verse})")
+            if section.summary:
+                print(f"    {section.summary}")
+
+    if sections.failed_segments:
+        count = len(sections.failed_segments)
+        print(f"\n[NOTE] {count} segment(s) could not be analyzed: {sections.failed_segments}")
+
+    if sections.low_confidence:
+        fields = ", ".join(sections.low_confidence)
         print(f"\n[NOTE] Low confidence fields: {fields}")
 
 

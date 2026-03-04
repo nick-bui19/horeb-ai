@@ -1,0 +1,14 @@
+{
+  "candidates": [
+    {
+      "candidate_ref": "John 99:99",
+      "tag": "shared_phrase",
+      "justification_terms": ["world"]
+    },
+    {
+      "candidate_ref": "Revelation 1:1",
+      "tag": "weak_match",
+      "justification_terms": ["light"]
+    }
+  ]
+}
