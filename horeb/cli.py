@@ -75,10 +75,13 @@ def find_similar_cmd(
     top_n: int = typer.Option(
         10, "--top-n", help="Number of candidate passages to return"
     ),
+    tags: bool = typer.Option(
+        False, "--tags", help="Assign evidence tags to candidates via one LLM call (6A safe mode)"
+    ),
 ) -> None:
     """Find passages similar to the seed reference using TF-IDF scoring."""
     try:
-        result = _find_similar(reference, scope_book=book, top_n=top_n)
+        result = _find_similar(reference, scope_book=book, top_n=top_n, tags=tags)
         _print_similar_result(result)
     except InvalidReferenceError as exc:
         typer.echo(f"Error: {exc}", err=True)
@@ -150,6 +153,11 @@ def _print_similar_result(result: SimilarityResult) -> None:
     print(f"=== SIMILAR PASSAGES (seed: {result.seed_ref}) ===")
     for i, c in enumerate(result.candidates, 1):
         print(f"\n  {i}. {c.candidate_ref}  (score: {c.similarity_score:.4f})")
+        if c.tag is not None:
+            terms_str = (
+                f"  [{', '.join(c.justification_terms)}]" if c.justification_terms else ""
+            )
+            print(f"     Tag:       {c.tag}{terms_str}")
         if c.overlap_terms:
             print(f"     Overlap: {', '.join(c.overlap_terms)}")
         if c.verbatim_seed_quote:
