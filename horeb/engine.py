@@ -33,6 +33,8 @@ from horeb.prompts import (
     build_segment_user_prompt,
     build_synthesis_system_prompt,
     build_synthesis_user_prompt,
+    build_tag_system_prompt,
+    build_tag_user_prompt,
     build_user_prompt,
 )
 from horeb.repair import repair_and_validate
@@ -41,11 +43,13 @@ from horeb.schemas import (
     BookAnalysisResult,
     PassageAnalysisResult,
     PassageData,
+    SemanticTagResult,
     SegmentFailure,
     SegmentResult,
     SimilarityResult,
     SimilarOverlap,
     StudyGuideResult,
+    TaggedCandidate,
 )
 
 if TYPE_CHECKING:
@@ -55,6 +59,7 @@ MIN_PASSAGE_CHARS: int = 20
 SEGMENT_FAILURE_THRESHOLD: float = 0.3   # abort book if >30% of segments fail
 _MAX_PARALLEL_WORKERS: int = 5            # concurrent segment LLM calls in book pipeline stage 1
 _SYNTHESIS_MAX_TOKENS: int = 6144         # output budget for synthesis (supports 60-section outlines)
+_MAX_TAG_CANDIDATES: int = 10             # hard cap on candidates sent to the 6A tagging LLM call
 
 
 # ---------------------------------------------------------------------------
@@ -640,6 +645,99 @@ def analyze(
 
 
 # ---------------------------------------------------------------------------
+# find_similar — 6A evidence tagging helpers
+# ---------------------------------------------------------------------------
+
+def _validate_tag_result(
+    tag_result: SemanticTagResult,
+    tfidf_lookup: "dict[str, set[str]]",
+) -> list[TaggedCandidate]:
+    """
+    Post-validate a SemanticTagResult against the TF-IDF candidate set.
+
+    Rules (both must pass; failing entries are silently dropped):
+    1. candidate_ref must exactly match a key in tfidf_lookup.
+    2. every term in justification_terms must be in tfidf_lookup[candidate_ref].
+
+    Args:
+        tag_result:    Parsed and schema-validated SemanticTagResult from the LLM.
+        tfidf_lookup:  Mapping of {candidate_ref: set(overlap_terms)} from the scorer.
+
+    Returns:
+        List of TaggedCandidate entries that passed both validation rules.
+        May be empty if all entries fail.
+    """
+    valid: list[TaggedCandidate] = []
+    for entry in tag_result.candidates:
+        if entry.candidate_ref not in tfidf_lookup:
+            continue
+        allowed_terms = tfidf_lookup[entry.candidate_ref]
+        if not set(entry.justification_terms).issubset(allowed_terms):
+            continue
+        valid.append(entry)
+    return valid
+
+
+def tag_candidates(
+    seed_passage: PassageData,
+    candidates: "list",
+    llm: "LLMProvider",
+) -> list[TaggedCandidate]:
+    """
+    Assign a 6A evidence tag to each TF-IDF candidate using one LLM call.
+
+    At most _MAX_TAG_CANDIDATES candidates are sent to the LLM. If the
+    candidate list exceeds this limit, an INFO message is printed to stderr
+    and only the top-ranked candidates are tagged; the rest receive no tag.
+
+    Args:
+        seed_passage: The retrieved seed PassageData.
+        candidates:   CandidateMatch list from score_similarity() (ordered by score desc).
+        llm:          LLMProvider instance for the tagging call.
+
+    Returns:
+        List of validated TaggedCandidate entries. May be shorter than the
+        input candidate list if some entries fail post-validation, or empty
+        if the LLM call fails entirely.
+    """
+    if not candidates:
+        return []
+
+    to_tag = candidates[:_MAX_TAG_CANDIDATES]
+    if len(candidates) > _MAX_TAG_CANDIDATES:
+        print(
+            f"[INFO] --tags: capping LLM input at {_MAX_TAG_CANDIDATES} of "
+            f"{len(candidates)} candidates. Remaining candidates will have no tag.",
+            file=sys.stderr,
+        )
+
+    # Build lookup for post-validation: {candidate_ref: set(overlap_terms)}
+    tfidf_lookup: dict[str, set[str]] = {
+        c.reference: set(c.overlap_terms) for c in to_tag
+    }
+
+    tag_sys = build_tag_system_prompt()
+    tag_user = build_tag_user_prompt(seed_passage.text, seed_passage.reference, to_tag)
+
+    try:
+        raw = llm.complete(system=tag_sys, prompt=tag_user, schema=SemanticTagResult)
+        tag_result, _ = repair_and_validate(
+            raw=raw,
+            schema=SemanticTagResult,
+            llm=llm,
+            system_prompt=tag_sys,
+            user_prompt=tag_user,
+        )
+        return _validate_tag_result(tag_result, tfidf_lookup)
+    except Exception as exc:
+        print(
+            f"[WARN] --tags: tagging call failed ({exc}). Returning untagged results.",
+            file=sys.stderr,
+        )
+        return []
+
+
+# ---------------------------------------------------------------------------
 # find_similar pipeline
 # ---------------------------------------------------------------------------
 
@@ -647,15 +745,21 @@ def find_similar(
     reference: str,
     scope_book: str | None = None,
     top_n: int = 10,
+    tags: bool = False,
+    llm: "LLMProvider | None" = None,
 ) -> SimilarityResult:
     """
-    Find passages similar to the seed reference using TF-IDF scoring (fully deterministic).
-    No LLM calls are made.
+    Find passages similar to the seed reference using TF-IDF scoring.
+
+    By default fully deterministic — no LLM calls are made.
+    When tags=True, a single LLM call assigns a 6A evidence tag to the top
+    candidates (up to _MAX_TAG_CANDIDATES) after TF-IDF scoring completes.
 
     Stage 1: Retrieve seed passage.
     Stage 2: Resolve optional scope_book.
     Stage 3: TF-IDF scoring → scored_candidates.
     Stage 4: Build SimilarOverlap from scorer data directly.
+    Stage 5: (tags=True only) tag_candidates() → stamp tag + justification_terms.
 
     Raises:
         InvalidReferenceError: unrecognised reference or scope_book.
@@ -697,6 +801,22 @@ def find_similar(
             overlap_terms=c.overlap_terms,
             similarity_score=c.similarity_score,
         ))
+
+    # Stage 5 (optional): 6A evidence tagging — stamps tag + justification_terms
+    if tags:
+        if llm is None:
+            from horeb.llm import ClaudeProvider
+            llm = ClaudeProvider()
+        tagged = tag_candidates(seed_passage, scored_candidates, llm)
+        # Build lookup: {candidate_ref: TaggedCandidate} for O(1) stamping
+        tag_lookup: dict[str, TaggedCandidate] = {t.candidate_ref: t for t in tagged}
+        candidates = [
+            c.model_copy(update={
+                "tag": tag_lookup[c.candidate_ref].tag,
+                "justification_terms": tag_lookup[c.candidate_ref].justification_terms,
+            }) if c.candidate_ref in tag_lookup else c
+            for c in candidates
+        ]
 
     return SimilarityResult(seed_ref=reference, candidates=candidates)
 
