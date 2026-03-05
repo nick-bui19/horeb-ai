@@ -9,6 +9,7 @@ dependencies = [
     "pythonbible>=0.15.0",
     "json-repair>=0.28.0",
     "python-dotenv>=1.0.0",
+    "PySide6>=6.6.0",
 ]
 
 [project.scripts]
