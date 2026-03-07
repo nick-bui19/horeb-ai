@@ -213,7 +213,7 @@ def _check_single_verse_citation(
     Parse a single citation string and verify it is within the passage range.
     Raises CitationOutOfRangeError if out of range or unparseable.
     """
-    book_name = pb.Book(passage.book).name.replace("_", " ").title()
+    book_name = pb.Book(passage.book).title
 
     # Handle short "chapter:verse" format (e.g. "3:16")
     if ref_str.count(":") == 1 and not ref_str[0].isalpha():

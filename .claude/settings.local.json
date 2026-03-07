@@ -1,0 +1,8 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(cd \"/Users/nickbui/Documents/code/Non-School-CS-Related/Spring 2026/horeb\" && uv run python -c \"\nimport pythonbible as pb\nrefs = pb.get_references\\('1 Chronicles 17'\\)\nprint\\('refs:', refs\\)\nbook = refs[0].book\nprint\\('book:', book\\)\nprint\\('book.name:', book.name\\)\nprint\\('book.name.replace\\(\\\\\"_\\\\\",\\\\\" \\\\\"\\).title\\(\\):', book.name.replace\\('_', ' '\\).title\\(\\)\\)\nreconstructed = book.name.replace\\('_', ' '\\).title\\(\\) + ' 17:1'\nprint\\('reconstructed full_ref:', reconstructed\\)\nparsed = pb.get_references\\(reconstructed\\)\nprint\\('parsed result:', parsed\\)\n\")",
+      "Bash(cd \"/Users/nickbui/Documents/code/Non-School-CS-Related/Spring 2026/horeb\" && uv run python -c \"\nimport pythonbible as pb\nbroken = []\nfor book in pb.Book:\n    name = book.name.replace\\('_', ' '\\).title\\(\\)\n    test_ref = name + ' 1:1'\n    parsed = pb.get_references\\(test_ref\\)\n    if not parsed:\n        broken.append\\(\\(book.name, name\\)\\)\nprint\\('Books with broken name reconstruction:'\\)\nfor enum_name, reconstructed in broken:\n    print\\(f'  {enum_name!r} -> {reconstructed!r}'\\)\n\")"
+    ]
+  }
+}
